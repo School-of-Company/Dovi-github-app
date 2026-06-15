@@ -19,7 +19,12 @@ echo "Test pattern: $TEST_PATTERN"
 echo ""
 
 # Get list of test files
-TEST_FILES=$(find . -path "$TEST_PATTERN" | sort)
+# Normalize pattern for find -path which returns paths starting with ./
+FIND_PATTERN="$TEST_PATTERN"
+if [[ "$FIND_PATTERN" != ./* && "$FIND_PATTERN" != \** ]]; then
+  FIND_PATTERN="*/$FIND_PATTERN"
+fi
+TEST_FILES=$(find . -path "$FIND_PATTERN" | sort)
 TOTAL=$(echo "$TEST_FILES" | wc -l | tr -d ' ')
 
 echo "Found $TOTAL test files"

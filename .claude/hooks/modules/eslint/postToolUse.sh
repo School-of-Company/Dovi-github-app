@@ -4,13 +4,17 @@ TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name')
 if [[ "$TOOL_NAME" == "Edit" ]] || [[ "$TOOL_NAME" == "Write" ]]; then
     FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
     CWD=$(echo "$INPUT" | jq -r '.cwd')
+    [[ "$FILE_PATH" = /* ]] || FILE_PATH="$CWD/$FILE_PATH"
     case "$FILE_PATH" in
         *.js|*.ts|*.jsx|*.tsx|*.mjs|*.cjs|*.vue)
             if ! compgen -G "$CWD/.eslintrc*" > /dev/null 2>&1 && \
-               ! compgen -G "$CWD/eslint.config.*" > /dev/null 2>&1; then
+               ! compgen -G "$CWD/eslint.config.*" > /dev/null 2>&1 && \
+               ! compgen -G ".eslintrc*" > /dev/null 2>&1 && \
+               ! compgen -G "eslint.config.*" > /dev/null 2>&1; then
                 exit 0
             fi
             ESLINT="$CWD/node_modules/.bin/eslint"
+            [[ -x "$ESLINT" ]] || ESLINT="node_modules/.bin/eslint"
             [[ -x "$ESLINT" ]] || ESLINT="npx --no-install eslint"
             echo "[Hook] Running eslint --fix for $(basename "$FILE_PATH")" >&2
             if $ESLINT --fix "$FILE_PATH" 2>&1; then

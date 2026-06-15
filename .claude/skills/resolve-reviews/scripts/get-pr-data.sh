@@ -12,6 +12,8 @@ BASE=$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)
 
 mkdir -p .pr-tmp
 
+git fetch origin "$BASE" --quiet 2>/dev/null || true
+
 gh api "repos/$REPO/pulls/$PR_NUMBER/comments" \
   --jq '[.[] | {id, path, line, body, user: .user.login}]' \
   > .pr-tmp/pr_comments.json

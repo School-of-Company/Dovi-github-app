@@ -18,7 +18,7 @@ if [[ "$TOOL_NAME" == "Write" ]] || [[ "$TOOL_NAME" == "Edit" ]]; then
         "xox[baprs]-[A-Za-z0-9-]+"
     )
     for pattern in "${PATTERNS[@]}"; do
-        if echo "$CONTENT" | grep -qE "$pattern"; then
+        if printf "%s\n" "$CONTENT" | grep -qE "$pattern"; then
             echo "[Hook] Potential secret detected in $(basename "$FILE_PATH"). Pattern: $pattern" >&2
             echo "Possible secret or credential detected in the file content. Review before writing."
             exit 2
