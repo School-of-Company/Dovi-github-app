@@ -12,6 +12,7 @@ bash "${CLAUDE_SKILL_DIR}/scripts/get-pr-data.sh"
 ```
 
 Output files:
+
 - `.pr-tmp/pr_comments.json` — inline review comments (id, path, line, body, user)
 - `.pr-tmp/pr_changed_files.txt` — changed files
 - `.pr-tmp/pr_commits.txt` — commits in this PR
@@ -114,6 +115,8 @@ Post an inline reply for each comment. Always quote `path` and `comment_id` to p
 gh api "repos/<owner>/<repo>/pulls/<pr_number>/comments/<comment_id>/replies" \
   -f body="<reply_body>"
 ```
+
+Always start the reply body with `@<reviewer>` (the `user` field from `pr_comments.json`).
 
 For reply body templates, read `${CLAUDE_SKILL_DIR}/references/reply-formats.md`.
 
