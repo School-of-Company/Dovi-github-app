@@ -37,9 +37,14 @@ export class ReviewResultConsumerService
     topic: string,
     message: KafkaMessage,
   ): Promise<void> {
+    if (!message.value) {
+      this.logger.warn(`빈 메시지 수신, 스킵: topic=${topic}`);
+      return;
+    }
+
     if (topic === process.env.KAFKA_REVIEW_COMPLETED_TOPIC) {
       const payload = JSON.parse(
-        message.value!.toString(),
+        message.value.toString(),
       ) as ReviewCompletedPayload;
       await this.orchestrator.handle(payload);
       await this.jobStateStore.set(payload.reviewJobId, 'completed');
@@ -49,7 +54,7 @@ export class ReviewResultConsumerService
 
     if (topic === process.env.KAFKA_REVIEW_FAILED_TOPIC) {
       const payload = JSON.parse(
-        message.value!.toString(),
+        message.value.toString(),
       ) as ReviewFailedPayload;
       await this.orchestrator.handle(payload);
       await this.jobStateStore.set(payload.reviewJobId, 'failed');

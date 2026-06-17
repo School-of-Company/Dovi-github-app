@@ -29,7 +29,7 @@ export abstract class BaseKafkaConsumer implements OnModuleDestroy {
           {
             topic,
             partition,
-            offset: (Number(message.offset) + 1).toString(),
+            offset: (BigInt(message.offset) + 1n).toString(),
           },
         ]);
       },
