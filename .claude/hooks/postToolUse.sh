@@ -7,7 +7,7 @@ MODULES_DIR="$SCRIPT_DIR/modules"
 
 for hook in "$MODULES_DIR"/*/postToolUse.sh; do
     [[ -f "$hook" ]] || continue
-    echo "$INPUT" | bash "$hook"
+    printf "%s\n" "$INPUT" | bash "$hook"
 done
 
 exit 0

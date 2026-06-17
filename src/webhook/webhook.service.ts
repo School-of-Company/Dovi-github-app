@@ -51,6 +51,7 @@ export class WebhookService {
   private shouldProcess(event: string, payload: GithubWebhookPayload): boolean {
     return (
       event === 'pull_request' &&
+      !!payload.installation &&
       ALLOWED_ACTIONS.has(payload.action) &&
       !payload.pull_request.draft &&
       payload.sender.type === 'User'

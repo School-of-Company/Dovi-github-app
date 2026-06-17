@@ -63,7 +63,11 @@ export class PrDataCollectorService {
       mediaType: { format: 'diff' },
     });
 
-    const diff = response.data as unknown as string;
+    const diff = response.data as unknown;
+    if (typeof diff !== 'string') {
+      this.logger.error(`PR #${prNumber} diff response is not a string.`);
+      return null;
+    }
     const diffBytes = Buffer.byteLength(diff, 'utf-8');
 
     if (diffBytes > DIFF_SIZE_LIMIT) {
