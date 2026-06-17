@@ -17,12 +17,16 @@ export class ReviewDispatcherService {
   async dispatch(payload: ReviewRequestPayload): Promise<void> {
     const { reviewJobId } = payload;
 
-    if (await this.idempotencyStore.exists(reviewJobId)) {
+    const [alreadyProcessed, state] = await Promise.all([
+      this.idempotencyStore.exists(reviewJobId),
+      this.jobStateStore.get(reviewJobId),
+    ]);
+
+    if (alreadyProcessed) {
       this.logger.log(`이미 처리된 reviewJobId, 스킵: ${reviewJobId}`);
       return;
     }
 
-    const state = await this.jobStateStore.get(reviewJobId);
     if (state === 'completed' || state === 'processing') {
       this.logger.log(`현재 상태(${state})로 스킵: ${reviewJobId}`);
       return;
