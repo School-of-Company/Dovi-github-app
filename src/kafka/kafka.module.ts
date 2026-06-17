@@ -1,8 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { Kafka } from 'kafkajs';
 import { KafkaProducerService } from './kafka-producer.service';
-
-export const KAFKA_CLIENT = 'KAFKA_CLIENT';
+import { KAFKA_CLIENT } from './kafka.constants';
 
 @Global()
 @Module({

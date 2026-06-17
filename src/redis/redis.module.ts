@@ -2,8 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import Redis from 'ioredis';
 import { IdempotencyStore } from './idempotency.store';
 import { JobStateStore } from './job-state.store';
-
-export const REDIS_CLIENT = 'REDIS_CLIENT';
+import { REDIS_CLIENT } from './redis.constants';
 
 @Global()
 @Module({

@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { Redis } from 'ioredis';
-import { REDIS_CLIENT } from './redis.module';
+import { REDIS_CLIENT } from './redis.constants';
 import type { JobState } from './job-state.type';
 
 const TTL_SECONDS = 60 * 60;

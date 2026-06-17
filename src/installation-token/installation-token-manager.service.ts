@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
 import type { Redis } from 'ioredis';
-import { REDIS_CLIENT } from '../redis/redis.module';
+import { REDIS_CLIENT } from '../redis/redis.constants';
 import type { InstallationTokenManager } from './installation-token-manager.interface';
 
 const TOKEN_TTL_SECONDS = 50 * 60;
