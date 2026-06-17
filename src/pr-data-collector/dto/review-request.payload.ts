@@ -1,6 +1,13 @@
 export interface ChangedFile {
   filename: string;
-  status: 'added' | 'modified' | 'removed' | 'renamed';
+  status:
+    | 'added'
+    | 'modified'
+    | 'removed'
+    | 'renamed'
+    | 'copied'
+    | 'changed'
+    | 'unchanged';
   patch?: string;
 }
 

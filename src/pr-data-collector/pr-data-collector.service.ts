@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import type { Octokit } from '@octokit/rest';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
 import type { CollectPrDataCommand } from './dto/collect-pr-data.command';
@@ -24,15 +25,18 @@ export class PrDataCollectorService {
     const octokit =
       await this.installationTokenManager.getOctokit(installationId);
 
-    const diff = await this.fetchDiff(octokit, owner, repo, prNumber);
-    if (diff === null) return null;
-
-    const changedFiles = await this.fetchChangedFiles(
+    const diffPromise = this.fetchDiff(octokit, owner, repo, prNumber);
+    const changedFilesPromise = this.fetchChangedFiles(
       octokit,
       owner,
       repo,
       prNumber,
     );
+
+    const diff = await diffPromise;
+    if (diff === null) return null;
+
+    const changedFiles = await changedFilesPromise;
 
     return {
       reviewJobId: `${repositoryId}_${prNumber}_${headSha}`,
@@ -47,7 +51,7 @@ export class PrDataCollectorService {
   }
 
   private async fetchDiff(
-    octokit: Awaited<ReturnType<InstallationTokenManager['getOctokit']>>,
+    octokit: Octokit,
     owner: string,
     repo: string,
     prNumber: number,
@@ -87,7 +91,7 @@ export class PrDataCollectorService {
 
     return files.map((file) => ({
       filename: file.filename,
-      status: file.status as 'added' | 'modified' | 'removed' | 'renamed',
+      status: file.status,
       patch: file.patch,
     }));
   }

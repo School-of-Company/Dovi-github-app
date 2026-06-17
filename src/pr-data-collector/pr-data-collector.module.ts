@@ -7,7 +7,11 @@ import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-t
     PrDataCollectorService,
     {
       provide: INSTALLATION_TOKEN_MANAGER,
-      useValue: null,
+      useFactory: () => {
+        throw new Error(
+          'InstallationTokenManager is not implemented. Provide a concrete class.',
+        );
+      },
     },
   ],
   exports: [PrDataCollectorService],

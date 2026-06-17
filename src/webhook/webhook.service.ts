@@ -15,7 +15,14 @@ export class WebhookService {
   handle(event: string, payload: GithubWebhookPayload): void {
     if (!this.shouldProcess(event, payload)) return;
 
-    const [owner, repo] = payload.repository.full_name.split('/');
+    const parts = payload.repository.full_name.split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      this.logger.error(
+        `올바르지 않은 repository full_name: ${payload.repository.full_name}`,
+      );
+      return;
+    }
+    const [owner, repo] = parts;
 
     this.prDataCollectorService
       .collect({
@@ -25,6 +32,13 @@ export class WebhookService {
         prNumber: payload.pull_request.number,
         headSha: payload.pull_request.head.sha,
         repositoryId: payload.repository.id,
+      })
+      .then((result) => {
+        if (result === null) {
+          this.logger.warn(
+            `PR #${payload.pull_request.number} 수집 스킵 (diff 크기 초과)`,
+          );
+        }
       })
       .catch((err: unknown) => {
         this.logger.error(

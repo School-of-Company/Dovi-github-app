@@ -1,7 +1,5 @@
-export type PullRequestAction = 'opened' | 'synchronize' | 'reopened' | string;
-
 export interface GithubWebhookPayload {
-  action: PullRequestAction;
+  action: string;
   installation: {
     id: number;
   };
