@@ -5,7 +5,7 @@ import type { InstallationTokenManager } from '../installation-token/installatio
 import type { CollectPrDataCommand } from './dto/collect-pr-data.command';
 import type { ReviewRequestPayload } from './dto/review-request.payload';
 
-const DIFF_SIZE_LIMIT = 10 * 1024 * 1024;
+const DIFF_SIZE_LIMIT = 20 * 1024 * 1024;
 
 @Injectable()
 export class PrDataCollectorService {
@@ -72,7 +72,7 @@ export class PrDataCollectorService {
 
     if (diffBytes > DIFF_SIZE_LIMIT) {
       this.logger.warn(
-        `PR #${prNumber} diff size (${diffBytes} bytes) exceeds 10MB limit. Skipping.`,
+        `PR #${prNumber} diff size (${diffBytes} bytes) exceeds 20MB limit. Skipping.`,
       );
       return null;
     }

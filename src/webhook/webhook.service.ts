@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrDataCollectorService } from '../pr-data-collector/pr-data-collector.service';
+import { ReviewDispatcherService } from '../review-dispatcher/review-dispatcher.service';
 import type { GithubWebhookPayload } from './dto/github-webhook-payload';
 
 const ALLOWED_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
@@ -10,6 +11,7 @@ export class WebhookService {
 
   constructor(
     private readonly prDataCollectorService: PrDataCollectorService,
+    private readonly reviewDispatcherService: ReviewDispatcherService,
   ) {}
 
   handle(event: string, payload: GithubWebhookPayload): void {
@@ -38,11 +40,13 @@ export class WebhookService {
           this.logger.warn(
             `PR #${payload.pull_request.number} 수집 스킵 (diff 크기 초과)`,
           );
+          return;
         }
+        return this.reviewDispatcherService.dispatch(result);
       })
       .catch((err: unknown) => {
         this.logger.error(
-          `PR 데이터 수집 실패 (PR #${payload.pull_request.number})`,
+          `PR 데이터 수집/리뷰 발행 실패 (PR #${payload.pull_request.number})`,
           err,
         );
       });
