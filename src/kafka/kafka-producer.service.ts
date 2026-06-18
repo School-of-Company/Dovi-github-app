@@ -4,6 +4,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
+import { CompressionTypes } from 'kafkajs';
 import type { Kafka, Producer } from 'kafkajs';
 import { KAFKA_CLIENT } from './kafka.constants';
 
@@ -27,6 +28,7 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
     await this.producer.send({
       topic,
       messages: [{ key, value: JSON.stringify(payload) }],
+      compression: CompressionTypes.GZIP,
     });
   }
 }
