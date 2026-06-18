@@ -2,23 +2,23 @@
 
 ## 확정된 설계 결정
 
-| #   | 항목                                       | 결정                                                                                                                                |
-| --- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | Octokit 인증을 위한 installationId 확보   | `ReviewRequestPayload`/`ReviewCompletedPayload`/`ReviewFailedPayload`에 `installationId: number` 추가, 외부 리뷰 서비스가 요청값을 결과에 echo-back |
-| 2   | PR 등록 방식                               | `Pulls.createReview` 1회 호출로 일괄 등록 (`comments[]` + `body`)                                                                  |
-| 3   | 리뷰 `event` 타입                          | 항상 `'COMMENT'` 고정. 자동 `APPROVE`/`REQUEST_CHANGES` 없음 (AI가 승인/변경요청 권한을 갖지 않음)                                |
-| 4   | `reviews: []`(findings 없음) 처리          | `summary`만 담아 빈 `comments: []`로 `createReview` 호출 (Gemini Code Assist 스타일 "리뷰 완료" 코멘트)                            |
-| 5   | `failed` 케이스 PR 반영                    | PR에는 아무것도 남기지 않음. Discord 알림만 발송                                                                                    |
-| 6   | Discord 알림 라이브러리                    | `dicoshot-nest`(`DicoshotModule`/`DicoshotService`) 사용. `sendCustom({title, description, color})`으로 커스텀 알림                |
-| 7   | Discord 알림 범위                          | (a) `ReviewFailedPayload` 수신 시 (b) Orchestrator의 GitHub API 호출 자체 실패 시, 둘 다 알림                                       |
-| 8   | Discord 알림 전송 자체가 실패하는 경우     | 로깅만 하고 무시 (원본 에러/Kafka 재시도 로직에 영향 주지 않음)                                                                     |
-| 9   | 앱 시작/종료 알림                          | `notifyOnStartup`/`notifyOnShutdown` 기본값(`true`) 유지                                                                            |
-| 10  | `DISCORD_WEBHOOK_URL` 누락 시              | 부팅 실패하지 않음 (라이브러리 기본 동작인 자동 비활성화에 위임, 필수 환경변수로 강제하지 않음)                                    |
-| 11  | suggestion 블록 적용 범위                  | `severity === 'critical'`인 finding만 ` ```suggestion ` 코드 제안 블록 적용. 나머지는 일반 텍스트                                  |
-| 12  | 이전 헤드 기준 리뷰 정리                   | 정리하지 않음. `synchronize`로 재실행될 때마다 새 리뷰가 누적됨 (Gemini와 동일한 동작)                                             |
-| 13  | `confidence` 필드 활용                     | 필터링 없음. 참고용으로 댓글 본문에만 노출 (필터링은 AI 분석 서비스의 책임 영역)                                                   |
-| 14  | "영구적으로 실패하는" completed 메시지     | Octokit `RequestError.status`가 4xx면 재시도하지 않고 로그+Discord 알림 후 정상 종료 처리(offset 커밋). 5xx/네트워크 에러는 기존처럼 throw하여 재시도 |
-| 15  | 테스트 범위                                | failed 분기 / 빈 reviews 분기 / critical suggestion 포맷 / Octokit 4xx 실패(커밋) / Octokit 5xx 실패(재throw) 핵심 분기만 단위 테스트 |
+| #   | 항목                                    | 결정                                                                                                                                                  |
+| --- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Octokit 인증을 위한 installationId 확보 | `ReviewRequestPayload`/`ReviewCompletedPayload`/`ReviewFailedPayload`에 `installationId: number` 추가, 외부 리뷰 서비스가 요청값을 결과에 echo-back   |
+| 2   | PR 등록 방식                            | `Pulls.createReview` 1회 호출로 일괄 등록 (`comments[]` + `body`)                                                                                     |
+| 3   | 리뷰 `event` 타입                       | 항상 `'COMMENT'` 고정. 자동 `APPROVE`/`REQUEST_CHANGES` 없음 (AI가 승인/변경요청 권한을 갖지 않음)                                                    |
+| 4   | `reviews: []`(findings 없음) 처리       | `summary`만 담아 빈 `comments: []`로 `createReview` 호출 (Gemini Code Assist 스타일 "리뷰 완료" 코멘트)                                               |
+| 5   | `failed` 케이스 PR 반영                 | PR에는 아무것도 남기지 않음. Discord 알림만 발송                                                                                                      |
+| 6   | Discord 알림 라이브러리                 | `dicoshot-nest`(`DicoshotModule`/`DicoshotService`) 사용. `sendCustom({title, description, color})`으로 커스텀 알림                                   |
+| 7   | Discord 알림 범위                       | (a) `ReviewFailedPayload` 수신 시 (b) Orchestrator의 GitHub API 호출 자체 실패 시, 둘 다 알림                                                         |
+| 8   | Discord 알림 전송 자체가 실패하는 경우  | 로깅만 하고 무시 (원본 에러/Kafka 재시도 로직에 영향 주지 않음)                                                                                       |
+| 9   | 앱 시작/종료 알림                       | `notifyOnStartup`/`notifyOnShutdown` 기본값(`true`) 유지                                                                                              |
+| 10  | `DISCORD_WEBHOOK_URL` 누락 시           | 부팅 실패하지 않음 (라이브러리 기본 동작인 자동 비활성화에 위임, 필수 환경변수로 강제하지 않음)                                                       |
+| 11  | suggestion 블록 적용 범위               | `severity === 'critical'`인 finding만 ` ```suggestion ` 코드 제안 블록 적용. 나머지는 일반 텍스트                                                     |
+| 12  | 이전 헤드 기준 리뷰 정리                | 정리하지 않음. `synchronize`로 재실행될 때마다 새 리뷰가 누적됨 (Gemini와 동일한 동작)                                                                |
+| 13  | `confidence` 필드 활용                  | 필터링 없음. 참고용으로 댓글 본문에만 노출 (필터링은 AI 분석 서비스의 책임 영역)                                                                      |
+| 14  | "영구적으로 실패하는" completed 메시지  | Octokit `RequestError.status`가 4xx면 재시도하지 않고 로그+Discord 알림 후 정상 종료 처리(offset 커밋). 5xx/네트워크 에러는 기존처럼 throw하여 재시도 |
+| 15  | 테스트 범위                             | failed 분기 / 빈 reviews 분기 / critical suggestion 포맷 / Octokit 4xx 실패(커밋) / Octokit 5xx 실패(재throw) 핵심 분기만 단위 테스트                 |
 
 ---
 
@@ -101,12 +101,14 @@ export interface ReviewFailedPayload {
   repositoryId: number;
   prNumber: number;
   headSha: string;
+  owner: string; // 추가 (코드 리뷰 반영: Discord 알림 가독성)
+  repo: string; // 추가 (코드 리뷰 반영: Discord 알림 가독성)
   installationId: number; // 추가
   reason: 'parse_error' | 'timeout' | 'server_error';
 }
 ```
 
-> **외부 의존**: LLM 분석 서비스(별도 팀원 구현)가 `ReviewRequestPayload.installationId`를 그대로 결과 payload에 echo-back 해주는 계약 변경 필요. 이 리포지토리 범위 밖이므로 별도로 전달.
+> **외부 의존**: LLM 분석 서비스(별도 팀원 구현)가 `ReviewRequestPayload.installationId`/`owner`/`repo`를 그대로 결과 payload에 echo-back 해주는 계약 변경 필요. 이 리포지토리 범위 밖이므로 별도로 전달.
 
 ### `PrDataCollectorService.collect()` 변경
 
@@ -178,6 +180,9 @@ async handle(
 export function buildReviewComments(
   reviews: ReviewCompletedPayload['reviews'],
 ): { path: string; line: number; body: string }[] {
+  if (!Array.isArray(reviews)) {
+    return []; // 코드 리뷰 반영: 외부 입력 경계(Kafka) 방어
+  }
   return reviews.map((review) => ({
     path: review.filePath,
     line: review.line,
@@ -185,10 +190,17 @@ export function buildReviewComments(
   }));
 }
 
-function formatCommentBody(review: ReviewCompletedPayload['reviews'][number]): string {
-  const header = `**[${review.severity}] ${review.title}** (신뢰도: ${Math.round(review.confidence * 100)}%)`;
-  const evidence = review.evidence.length
-    ? `\n\n${review.evidence.map((e) => `- ${e}`).join('\n')}`
+function formatCommentBody(
+  review: ReviewCompletedPayload['reviews'][number],
+): string {
+  const confidence =
+    typeof review.confidence === 'number'
+      ? Math.round(review.confidence * 100)
+      : 0;
+  const header = `**[${review.severity}] ${review.title}** (신뢰도: ${confidence}%)`;
+  const evidenceList = Array.isArray(review.evidence) ? review.evidence : [];
+  const evidence = evidenceList.length
+    ? `\n\n${evidenceList.map((e) => `- ${e}`).join('\n')}`
     : '';
 
   if (review.severity === 'critical' && review.suggestedFix) {
@@ -277,8 +289,8 @@ export class ReviewResultConsumerModule {}
 
 ## 환경변수 (추가)
 
-| 변수명                | 용도                                                                 |
-| ---------------------- | ---------------------------------------------------------------------- |
+| 변수명                | 용도                                                                             |
+| --------------------- | -------------------------------------------------------------------------------- |
 | `DISCORD_WEBHOOK_URL` | Discord 알림 webhook (미설정 시 `dicoshot-nest`가 자동 비활성화, 부팅 실패 없음) |
 
 ---

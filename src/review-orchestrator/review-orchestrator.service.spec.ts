@@ -30,6 +30,8 @@ describe('ReviewOrchestratorService', () => {
     repositoryId: 1,
     prNumber: 1,
     headSha: 'sha',
+    owner: 'owner',
+    repo: 'repo',
     installationId: 123,
     reason: 'timeout',
   };
@@ -72,6 +74,23 @@ describe('ReviewOrchestratorService', () => {
         comments: [],
       }),
     );
+  });
+
+  it('evidence/confidence가 누락된 finding이 와도 TypeError 없이 처리한다', async () => {
+    const malformedReview = {
+      severity: 'minor',
+      filePath: 'a.ts',
+      line: 1,
+      title: 'malformed',
+      message: 'msg',
+    } as unknown as ReviewCompletedPayload['reviews'][number];
+    const payload: ReviewCompletedPayload = {
+      ...completedPayload,
+      reviews: [malformedReview],
+    };
+
+    await expect(service.handle(payload)).resolves.toBeUndefined();
+    expect(createReview).toHaveBeenCalled();
   });
 
   it('critical + suggestedFix가 있는 finding은 suggestion 블록으로, 나머지는 일반 텍스트로 포맷한다', async () => {

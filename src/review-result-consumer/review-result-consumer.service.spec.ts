@@ -80,6 +80,8 @@ describe('ReviewResultConsumerService', () => {
       repositoryId: 1,
       prNumber: 1,
       headSha: 'sha',
+      owner: 'owner',
+      repo: 'repo',
       installationId: 123,
       reason: 'timeout',
     };

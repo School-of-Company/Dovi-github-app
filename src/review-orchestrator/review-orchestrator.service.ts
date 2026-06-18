@@ -69,7 +69,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
   private async notifyFailure(payload: ReviewFailedPayload): Promise<void> {
     await this.safeNotify({
       title: 'AI 리뷰 분석 실패',
-      description: `${payload.repositoryId}#${payload.prNumber} (reviewJobId=${payload.reviewJobId}) reason=${payload.reason}`,
+      description: `${payload.owner}/${payload.repo}#${payload.prNumber} (reviewJobId=${payload.reviewJobId}) reason=${payload.reason}`,
       color: 'danger',
     });
   }

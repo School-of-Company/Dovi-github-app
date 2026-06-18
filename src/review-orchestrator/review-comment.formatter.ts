@@ -5,6 +5,9 @@ type Finding = ReviewCompletedPayload['reviews'][number];
 export function buildReviewComments(
   reviews: ReviewCompletedPayload['reviews'],
 ): { path: string; line: number; body: string }[] {
+  if (!Array.isArray(reviews)) {
+    return [];
+  }
   return reviews.map((review) => ({
     path: review.filePath,
     line: review.line,
@@ -13,9 +16,14 @@ export function buildReviewComments(
 }
 
 function formatCommentBody(review: Finding): string {
-  const header = `**[${review.severity}] ${review.title}** (신뢰도: ${Math.round(review.confidence * 100)}%)`;
-  const evidence = review.evidence.length
-    ? `\n\n${review.evidence.map((e) => `- ${e}`).join('\n')}`
+  const confidence =
+    typeof review.confidence === 'number'
+      ? Math.round(review.confidence * 100)
+      : 0;
+  const header = `**[${review.severity}] ${review.title}** (신뢰도: ${confidence}%)`;
+  const evidenceList = Array.isArray(review.evidence) ? review.evidence : [];
+  const evidence = evidenceList.length
+    ? `\n\n${evidenceList.map((e) => `- ${e}`).join('\n')}`
     : '';
 
   if (review.severity === 'critical' && review.suggestedFix) {
