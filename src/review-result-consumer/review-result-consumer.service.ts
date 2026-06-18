@@ -49,6 +49,9 @@ export class ReviewResultConsumerService
       const payload = JSON.parse(
         message.value.toString(),
       ) as ReviewCompletedPayload;
+      if (!payload?.reviewJobId) {
+        throw new Error('Invalid completed payload: reviewJobId is missing');
+      }
       await this.orchestrator.handle(payload);
       await Promise.all([
         this.jobStateStore.set(payload.reviewJobId, 'completed'),
@@ -61,6 +64,9 @@ export class ReviewResultConsumerService
       const payload = JSON.parse(
         message.value.toString(),
       ) as ReviewFailedPayload;
+      if (!payload?.reviewJobId) {
+        throw new Error('Invalid failed payload: reviewJobId is missing');
+      }
       await this.orchestrator.handle(payload);
       await this.jobStateStore.set(payload.reviewJobId, 'failed');
       return;
