@@ -76,6 +76,32 @@ describe('ReviewOrchestratorService', () => {
     );
   });
 
+  it('filePath/line이 유효하지 않은 finding은 제외하고 나머지만 등록한다', async () => {
+    const valid: ReviewCompletedPayload['reviews'][number] = {
+      severity: 'minor',
+      confidence: 0.5,
+      filePath: 'valid.ts',
+      line: 5,
+      title: 'valid',
+      message: 'msg',
+      evidence: [],
+    };
+    const invalidByEmptyPath = { ...valid, filePath: '' };
+    const invalidByZeroLine = { ...valid, line: 0 };
+    const payload: ReviewCompletedPayload = {
+      ...completedPayload,
+      reviews: [valid, invalidByEmptyPath, invalidByZeroLine],
+    };
+
+    await service.handle(payload);
+
+    const [{ comments }] = createReview.mock.calls[0] as [
+      { comments: { path: string }[] },
+    ];
+    expect(comments).toHaveLength(1);
+    expect(comments[0].path).toBe('valid.ts');
+  });
+
   it('evidence/confidence가 누락된 finding이 와도 TypeError 없이 처리한다', async () => {
     const malformedReview = {
       severity: 'minor',

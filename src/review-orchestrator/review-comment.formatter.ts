@@ -8,11 +8,20 @@ export function buildReviewComments(
   if (!Array.isArray(reviews)) {
     return [];
   }
-  return reviews.map((review) => ({
-    path: review.filePath,
-    line: review.line,
-    body: formatCommentBody(review),
-  }));
+  return reviews
+    .filter(
+      (review) =>
+        review &&
+        typeof review.filePath === 'string' &&
+        review.filePath.trim() !== '' &&
+        typeof review.line === 'number' &&
+        review.line > 0,
+    )
+    .map((review) => ({
+      path: review.filePath,
+      line: review.line,
+      body: formatCommentBody(review),
+    }));
 }
 
 function formatCommentBody(review: Finding): string {

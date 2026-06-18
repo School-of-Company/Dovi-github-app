@@ -183,11 +183,20 @@ export function buildReviewComments(
   if (!Array.isArray(reviews)) {
     return []; // 코드 리뷰 반영: 외부 입력 경계(Kafka) 방어
   }
-  return reviews.map((review) => ({
-    path: review.filePath,
-    line: review.line,
-    body: formatCommentBody(review),
-  }));
+  return reviews
+    .filter(
+      (review) =>
+        review &&
+        typeof review.filePath === 'string' &&
+        review.filePath.trim() !== '' &&
+        typeof review.line === 'number' &&
+        review.line > 0,
+    ) // 코드 리뷰 반영: 하나라도 invalid하면 createReview 전체가 422로 실패하는 것 방지
+    .map((review) => ({
+      path: review.filePath,
+      line: review.line,
+      body: formatCommentBody(review),
+    }));
 }
 
 function formatCommentBody(
