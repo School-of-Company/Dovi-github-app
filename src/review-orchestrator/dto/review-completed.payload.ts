@@ -5,6 +5,7 @@ export interface ReviewCompletedPayload {
   headSha: string;
   owner: string;
   repo: string;
+  installationId: number;
   summary: string;
   reviews: {
     severity: 'critical' | 'major' | 'minor' | 'suggestion';

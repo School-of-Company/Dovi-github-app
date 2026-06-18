@@ -26,6 +26,8 @@
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^22.0.1",
     "@octokit/webhooks": "^14.2.0",
+    "dicoshot-core": "^0.1.0",
+    "dicoshot-nest": "^0.2.1",
     "ioredis": "^5.11.1",
     "kafkajs": "^2.2.4",
     "reflect-metadata": "^0.2.2",

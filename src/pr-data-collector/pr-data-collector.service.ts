@@ -45,6 +45,7 @@ export class PrDataCollectorService {
       headSha,
       owner,
       repo,
+      installationId,
       diff,
       changedFiles,
     };

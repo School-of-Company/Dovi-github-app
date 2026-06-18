@@ -53,6 +53,7 @@ describe('ReviewResultConsumerService', () => {
       headSha: 'sha',
       owner: 'owner',
       repo: 'repo',
+      installationId: 123,
       summary: 'ok',
       reviews: [],
     };
@@ -79,6 +80,9 @@ describe('ReviewResultConsumerService', () => {
       repositoryId: 1,
       prNumber: 1,
       headSha: 'sha',
+      owner: 'owner',
+      repo: 'repo',
+      installationId: 123,
       reason: 'timeout',
     };
     const message = { value: Buffer.from(JSON.stringify(payload)) };
