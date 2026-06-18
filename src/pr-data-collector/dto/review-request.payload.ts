@@ -18,6 +18,7 @@ export interface ReviewRequestPayload {
   headSha: string;
   owner: string;
   repo: string;
+  installationId: number;
   diff: string;
   changedFiles: ChangedFile[];
 }

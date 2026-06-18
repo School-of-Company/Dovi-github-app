@@ -3,5 +3,6 @@ export interface ReviewFailedPayload {
   repositoryId: number;
   prNumber: number;
   headSha: string;
+  installationId: number;
   reason: 'parse_error' | 'timeout' | 'server_error';
 }

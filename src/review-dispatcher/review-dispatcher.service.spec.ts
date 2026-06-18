@@ -12,6 +12,7 @@ describe('ReviewDispatcherService', () => {
     headSha: 'sha',
     owner: 'owner',
     repo: 'repo',
+    installationId: 123,
     diff: 'diff',
     changedFiles: [],
   };
