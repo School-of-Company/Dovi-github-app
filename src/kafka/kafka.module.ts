@@ -8,11 +8,18 @@ import { KAFKA_CLIENT } from './kafka.constants';
   providers: [
     {
       provide: KAFKA_CLIENT,
-      useFactory: () =>
-        new Kafka({
+      useFactory: () => {
+        const brokers = process.env.KAFKA_BOOTSTRAP_SERVERS;
+        if (!brokers) {
+          throw new Error(
+            'KAFKA_BOOTSTRAP_SERVERS environment variable is not defined',
+          );
+        }
+        return new Kafka({
           clientId: 'dovi-github-app',
-          brokers: process.env.KAFKA_BOOTSTRAP_SERVERS!.split(','),
-        }),
+          brokers: brokers.split(','),
+        });
+      },
     },
     KafkaProducerService,
   ],
