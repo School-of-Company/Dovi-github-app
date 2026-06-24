@@ -145,7 +145,11 @@ export class WebhookService {
       );
       return false;
     }
-    return body.includes(`@${botLogin}`);
+    // GitHub 사용자명은 영숫자·하이픈만 허용한다. 멘션 뒤에 그런 문자가
+    // 이어지면(예: @dovi-code-assist-dev) 다른 대상이므로 매칭에서 제외한다.
+    const escaped = botLogin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const mention = new RegExp(`@${escaped}(?![a-zA-Z0-9-])`, 'i');
+    return mention.test(body);
   }
 
   private parseOwnerRepo(fullName: string): [string, string] | null {

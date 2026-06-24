@@ -90,6 +90,25 @@ describe('WebhookService', () => {
     expect(dispatcher.dispatch).not.toHaveBeenCalled();
   });
 
+  it('봇 슬러그가 접두사로만 일치하는 멘션은 무시한다', async () => {
+    service.handle(
+      'pull_request_review_comment',
+      reviewCommentPayload({
+        comment: {
+          id: 999,
+          in_reply_to_id: 100,
+          path: 'src/foo.ts',
+          line: 12,
+          diff_hunk: '@@ -1 +1 @@',
+          body: '@dovi-code-assist-dev 반영했습니다',
+        },
+      }),
+    );
+    await flush();
+
+    expect(dispatcher.dispatch).not.toHaveBeenCalled();
+  });
+
   it('멘션이 없는 답글은 무시한다', async () => {
     service.handle(
       'pull_request_review_comment',
