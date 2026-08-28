@@ -47,14 +47,14 @@ describe('ReviewResultConsumerService', () => {
 
   it('completed 토픽 처리 시 jobState를 completed로 갱신하고 idempotency를 기록한다', async () => {
     const payload: ReviewCompletedPayload = {
-      reviewJobId: 'repo_1_sha',
+      reviewJobId: '1:1:sha',
       repositoryId: 1,
       prNumber: 1,
       headSha: 'sha',
-      owner: 'owner',
-      repo: 'repo',
       summary: 'ok',
       reviews: [],
+      modelVersion: 'qwen2.5-coder-32b',
+      promptVersion: 'v1',
     };
     const message = { value: Buffer.from(JSON.stringify(payload)) };
 
@@ -75,9 +75,7 @@ describe('ReviewResultConsumerService', () => {
 
   it('failed 토픽 처리 시 jobState를 failed로 갱신하고 idempotency는 기록하지 않는다', async () => {
     const payload: ReviewFailedPayload = {
-      reviewJobId: 'repo_1_sha',
-      repositoryId: 1,
-      prNumber: 1,
+      reviewJobId: '1:1:sha',
       headSha: 'sha',
       reason: 'timeout',
     };
