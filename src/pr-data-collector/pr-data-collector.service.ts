@@ -3,9 +3,19 @@ import type { Octokit } from '@octokit/rest';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
 import type { CollectPrDataCommand } from './dto/collect-pr-data.command';
-import type { ReviewRequestPayload } from './dto/review-request.payload';
+import type {
+  ChangedFile,
+  ChangedFileStatus,
+  ReviewRequestPayload,
+} from './dto/review-request.payload';
 
 const DIFF_SIZE_LIMIT = 20 * 1024 * 1024;
+const SUPPORTED_FILE_STATUSES = new Set<ChangedFileStatus>([
+  'added',
+  'modified',
+  'removed',
+  'renamed',
+]);
 
 @Injectable()
 export class PrDataCollectorService {
@@ -19,8 +29,15 @@ export class PrDataCollectorService {
   async collect(
     command: CollectPrDataCommand,
   ): Promise<ReviewRequestPayload | null> {
-    const { installationId, owner, repo, prNumber, headSha, repositoryId } =
-      command;
+    const {
+      installationId,
+      owner,
+      repo,
+      prNumber,
+      headSha,
+      baseSha,
+      repositoryId,
+    } = command;
 
     const octokit =
       await this.installationTokenManager.getOctokit(installationId);
@@ -39,13 +56,11 @@ export class PrDataCollectorService {
     const changedFiles = await changedFilesPromise;
 
     return {
-      reviewJobId: `${repositoryId}_${prNumber}_${headSha}`,
+      reviewJobId: `${repositoryId}:${prNumber}:${headSha}`,
       repositoryId,
       prNumber,
       headSha,
-      owner,
-      repo,
-      diff,
+      baseSha,
       changedFiles,
     };
   }
@@ -85,7 +100,7 @@ export class PrDataCollectorService {
     owner: string,
     repo: string,
     prNumber: number,
-  ) {
+  ): Promise<ChangedFile[]> {
     const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
       owner,
       repo,
@@ -93,10 +108,14 @@ export class PrDataCollectorService {
       per_page: 100,
     });
 
-    return files.map((file) => ({
-      filename: file.filename,
-      status: file.status,
-      patch: file.patch,
-    }));
+    return files
+      .filter((file): file is typeof file & { status: ChangedFileStatus } =>
+        SUPPORTED_FILE_STATUSES.has(file.status as ChangedFileStatus),
+      )
+      .map((file) => ({
+        filePath: file.filename,
+        status: file.status,
+        patch: file.patch,
+      }));
   }
 }

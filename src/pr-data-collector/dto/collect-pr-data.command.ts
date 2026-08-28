@@ -4,5 +4,6 @@ export interface CollectPrDataCommand {
   repo: string;
   prNumber: number;
   headSha: string;
+  baseSha: string;
   repositoryId: number;
 }

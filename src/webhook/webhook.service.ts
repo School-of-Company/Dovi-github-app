@@ -33,6 +33,7 @@ export class WebhookService {
         repo,
         prNumber: payload.pull_request.number,
         headSha: payload.pull_request.head.sha,
+        baseSha: payload.pull_request.base.sha,
         repositoryId: payload.repository.id,
       })
       .then((result) => {
