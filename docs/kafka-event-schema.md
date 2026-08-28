@@ -47,6 +47,7 @@ Kafka 메시지 key는 `reviewJobId`(문자열)를 그대로 사용한다.
 | `prNumber`     | number |                             |
 | `headSha`      | string |                             |
 | `baseSha`      | string |                             |
+| `contextFiles` | array  | 아래 `ContextFile` 참고     |
 | `changedFiles` | array  | 아래 `ChangedFile` 참고     |
 
 `ChangedFile`:
@@ -56,6 +57,18 @@ Kafka 메시지 key는 `reviewJobId`(문자열)를 그대로 사용한다.
 | `filePath` | string                                            | GitHub API의 `filename`을 `filePath`로 매핑해서 전송                                        |
 | `status`   | `'added' \| 'modified' \| 'removed' \| 'renamed'` | ai-server가 허용하는 4종만 전송. `copied`/`changed`/`unchanged`인 파일은 수집 단계에서 제외 |
 | `patch`    | string?                                           |                                                                                             |
+
+`ContextFile` (ai-server의 `## Project Context` 프롬프트 섹션을 채우는 값, 노션 기획 7.2절 "DOVI.md가 프로젝트 컨텍스트 진입점"):
+
+| 필드      | 타입   | 비고                                                           |
+| --------- | ------ | -------------------------------------------------------------- |
+| `path`    | string | 저장소 내 파일 경로                                            |
+| `content` | string | 파일 원문 (UTF-8)                                              |
+| `source`  | string | 항상 `"github"` (ai-server `ContextFile.source` 기본값과 일치) |
+
+- 후보 파일: 루트의 `DOVI.md`(최우선), `README.md`, `openapi.yaml`/`openapi.yml`/`swagger.json`, `docs/**` 하위 전체 — 모두 "있으면" 포함하는 방식이며, 우선순위 정렬은 ai-server의 `app/review/context.py::_priority`가 담당한다.
+- secret 경로(`secrets/` 디렉터리, `.env*`, `.pem`/`.p8`/`.key` 확장자, 파일명에 `private-key`/`private_key` 포함)는 `PrDataCollectorService`의 `isSecretPath()`가 1차로 제외한다. ai-server의 `_is_secret()`이 동일 규칙으로 한 번 더 필터링한다.
+- 파일당 200KB(`CONTEXT_FILE_SIZE_LIMIT`) 초과 시 수집 단계에서 제외한다 (ai-server의 8000자/파일, 20000자/전체 truncation과는 별개의 1차 방어).
 
 `owner`, `repo`, `diff`는 ai-server가 소비하지 않아 페이로드에서 제외한다 (수집 단계에서 diff 크기 제한 체크 용도로만 로컬 사용).
 

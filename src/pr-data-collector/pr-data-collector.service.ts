@@ -6,6 +6,7 @@ import type { CollectPrDataCommand } from './dto/collect-pr-data.command';
 import type {
   ChangedFile,
   ChangedFileStatus,
+  ContextFile,
   ReviewRequestPayload,
 } from './dto/review-request.payload';
 
@@ -16,6 +17,31 @@ const SUPPORTED_FILE_STATUSES = new Set<ChangedFileStatus>([
   'removed',
   'renamed',
 ]);
+
+// DOVI.md는 프로젝트 컨텍스트의 최우선 진입점이며 (노션 기획 7.2절), 나머지는 있을 때만 사용한다.
+const CONTEXT_ROOT_CANDIDATES = [
+  'DOVI.md',
+  'README.md',
+  'openapi.yaml',
+  'openapi.yml',
+  'swagger.json',
+];
+const CONTEXT_DOCS_PREFIX = 'docs/';
+const CONTEXT_FILE_SIZE_LIMIT = 200 * 1024;
+const SECRET_EXTENSIONS = ['.env', '.pem', '.p8', '.key'];
+
+// ai-server의 app/review/context.py::_is_secret과 동일한 규칙 (1차 방어)
+function isSecretPath(path: string): boolean {
+  const segments = path.toLowerCase().split('/');
+  if (segments.includes('secrets')) return true;
+
+  const name = segments[segments.length - 1];
+  if (SECRET_EXTENSIONS.some((ext) => name.endsWith(ext))) return true;
+  if (name === '.env' || name.startsWith('.env.')) return true;
+  if (name.includes('private-key') || name.includes('private_key')) return true;
+
+  return false;
+}
 
 @Injectable()
 export class PrDataCollectorService {
@@ -49,11 +75,18 @@ export class PrDataCollectorService {
       repo,
       prNumber,
     );
+    const contextFilesPromise = this.fetchContextFiles(
+      octokit,
+      owner,
+      repo,
+      headSha,
+    );
 
     const diff = await diffPromise;
     if (diff === null) return null;
 
     const changedFiles = await changedFilesPromise;
+    const contextFiles = await contextFilesPromise;
 
     return {
       reviewJobId: `${repositoryId}:${prNumber}:${headSha}`,
@@ -61,6 +94,7 @@ export class PrDataCollectorService {
       prNumber,
       headSha,
       baseSha,
+      contextFiles,
       changedFiles,
     };
   }
@@ -117,5 +151,96 @@ export class PrDataCollectorService {
         status: file.status,
         patch: file.patch,
       }));
+  }
+
+  private async fetchContextFiles(
+    octokit: Octokit,
+    owner: string,
+    repo: string,
+    headSha: string,
+  ): Promise<ContextFile[]> {
+    const candidatePaths = await this.resolveContextFilePaths(
+      octokit,
+      owner,
+      repo,
+      headSha,
+    );
+
+    const files = await Promise.all(
+      candidatePaths.map((path) =>
+        this.fetchContextFileContent(octokit, owner, repo, headSha, path),
+      ),
+    );
+
+    return files.filter((file): file is ContextFile => file !== null);
+  }
+
+  private async resolveContextFilePaths(
+    octokit: Octokit,
+    owner: string,
+    repo: string,
+    headSha: string,
+  ): Promise<string[]> {
+    const paths = [...CONTEXT_ROOT_CANDIDATES];
+
+    try {
+      const { data } = await octokit.rest.git.getTree({
+        owner,
+        repo,
+        tree_sha: headSha,
+        recursive: '1',
+      });
+
+      for (const entry of data.tree) {
+        if (
+          entry.type === 'blob' &&
+          entry.path &&
+          entry.path.toLowerCase().startsWith(CONTEXT_DOCS_PREFIX)
+        ) {
+          paths.push(entry.path);
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `docs/ 디렉터리 조회 실패, root 컨텍스트 후보만 사용: ${owner}/${repo}`,
+        err,
+      );
+    }
+
+    return paths.filter((path) => !isSecretPath(path));
+  }
+
+  private async fetchContextFileContent(
+    octokit: Octokit,
+    owner: string,
+    repo: string,
+    headSha: string,
+    path: string,
+  ): Promise<ContextFile | null> {
+    try {
+      const { data } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path,
+        ref: headSha,
+      });
+
+      if (
+        Array.isArray(data) ||
+        data.type !== 'file' ||
+        !data.content ||
+        data.size > CONTEXT_FILE_SIZE_LIMIT
+      ) {
+        return null;
+      }
+
+      return {
+        path,
+        content: Buffer.from(data.content, 'base64').toString('utf-8'),
+        source: 'github',
+      };
+    } catch {
+      return null;
+    }
   }
 }

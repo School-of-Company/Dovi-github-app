@@ -11,6 +11,7 @@ describe('ReviewDispatcherService', () => {
     prNumber: 1,
     headSha: 'sha',
     baseSha: 'base-sha',
+    contextFiles: [],
     changedFiles: [],
   };
 
