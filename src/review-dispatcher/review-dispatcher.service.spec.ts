@@ -6,13 +6,12 @@ import type { ReviewRequestPayload } from '../pr-data-collector/dto/review-reque
 
 describe('ReviewDispatcherService', () => {
   const payload: ReviewRequestPayload = {
-    reviewJobId: 'repo_1_sha',
+    reviewJobId: '1:1:sha',
     repositoryId: 1,
     prNumber: 1,
     headSha: 'sha',
-    owner: 'owner',
-    repo: 'repo',
-    diff: 'diff',
+    baseSha: 'base-sha',
+    contextFiles: [],
     changedFiles: [],
   };
 

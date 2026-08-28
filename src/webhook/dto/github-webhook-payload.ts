@@ -9,6 +9,9 @@ export interface GithubWebhookPayload {
     head: {
       sha: string;
     };
+    base: {
+      sha: string;
+    };
   };
   comment?: {
     id: number;

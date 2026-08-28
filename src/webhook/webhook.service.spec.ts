@@ -10,9 +10,8 @@ describe('WebhookService', () => {
     repositoryId: 1,
     prNumber: 1,
     headSha: 'sha',
-    owner: 'owner',
-    repo: 'repo',
-    diff: 'diff',
+    baseSha: 'base-sha',
+    contextFiles: [],
     changedFiles: [],
   };
 
@@ -40,7 +39,12 @@ describe('WebhookService', () => {
     return {
       action: 'created',
       installation: { id: 10 },
-      pull_request: { number: 1, draft: false, head: { sha: 'sha' } },
+      pull_request: {
+        number: 1,
+        draft: false,
+        head: { sha: 'sha' },
+        base: { sha: 'base-sha' },
+      },
       comment: {
         id: 999,
         in_reply_to_id: 100,

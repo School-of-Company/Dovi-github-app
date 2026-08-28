@@ -1,13 +1,8 @@
+export type ChangedFileStatus = 'added' | 'modified' | 'removed' | 'renamed';
+
 export interface ChangedFile {
-  filename: string;
-  status:
-    | 'added'
-    | 'modified'
-    | 'removed'
-    | 'renamed'
-    | 'copied'
-    | 'changed'
-    | 'unchanged';
+  filePath: string;
+  status: ChangedFileStatus;
   patch?: string;
 }
 
@@ -23,14 +18,19 @@ export interface ReplyContext {
   author: string;
 }
 
+export interface ContextFile {
+  path: string;
+  content: string;
+  source: string;
+}
+
 export interface ReviewRequestPayload {
   reviewJobId: string;
   repositoryId: number;
   prNumber: number;
   headSha: string;
-  owner: string;
-  repo: string;
-  diff: string;
+  baseSha: string;
+  contextFiles: ContextFile[];
   changedFiles: ChangedFile[];
   replyContext?: ReplyContext;
 }
