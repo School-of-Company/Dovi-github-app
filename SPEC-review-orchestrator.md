@@ -2,23 +2,23 @@
 
 ## 확정된 설계 결정
 
-| #   | 항목                                    | 결정                                                                                                                                                  |
-| --- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Octokit 인증을 위한 installationId 확보 | `ReviewRequestPayload`/`ReviewCompletedPayload`/`ReviewFailedPayload`에 `installationId: number` 추가, 외부 리뷰 서비스가 요청값을 결과에 echo-back   |
-| 2   | PR 등록 방식                            | `Pulls.createReview` 1회 호출로 일괄 등록 (`comments[]` + `body`)                                                                                     |
-| 3   | 리뷰 `event` 타입                       | 항상 `'COMMENT'` 고정. 자동 `APPROVE`/`REQUEST_CHANGES` 없음 (AI가 승인/변경요청 권한을 갖지 않음)                                                    |
-| 4   | `reviews: []`(findings 없음) 처리       | `summary`만 담아 빈 `comments: []`로 `createReview` 호출 (Gemini Code Assist 스타일 "리뷰 완료" 코멘트)                                               |
-| 5   | `failed` 케이스 PR 반영                 | PR에는 아무것도 남기지 않음. Discord 알림만 발송                                                                                                      |
-| 6   | Discord 알림 라이브러리                 | `dicoshot-nest`(`DicoshotModule`/`DicoshotService`) 사용. `sendCustom({title, description, color})`으로 커스텀 알림                                   |
-| 7   | Discord 알림 범위                       | (a) `ReviewFailedPayload` 수신 시 (b) Orchestrator의 GitHub API 호출 자체 실패 시, 둘 다 알림                                                         |
-| 8   | Discord 알림 전송 자체가 실패하는 경우  | 로깅만 하고 무시 (원본 에러/Kafka 재시도 로직에 영향 주지 않음)                                                                                       |
-| 9   | 앱 시작/종료 알림                       | `notifyOnStartup`/`notifyOnShutdown` 기본값(`true`) 유지                                                                                              |
-| 10  | `DISCORD_WEBHOOK_URL` 누락 시           | 부팅 실패하지 않음 (라이브러리 기본 동작인 자동 비활성화에 위임, 필수 환경변수로 강제하지 않음)                                                       |
-| 11  | suggestion 블록 적용 범위               | `severity === 'critical'`인 finding만 ` ```suggestion ` 코드 제안 블록 적용. 나머지는 일반 텍스트                                                     |
-| 12  | 이전 헤드 기준 리뷰 정리                | 정리하지 않음. `synchronize`로 재실행될 때마다 새 리뷰가 누적됨 (Gemini와 동일한 동작)                                                                |
-| 13  | `confidence` 필드 활용                  | 필터링 없음. 참고용으로 댓글 본문에만 노출 (필터링은 AI 분석 서비스의 책임 영역)                                                                      |
-| 14  | "영구적으로 실패하는" completed 메시지  | Octokit `RequestError.status`가 4xx면 재시도하지 않고 로그+Discord 알림 후 정상 종료 처리(offset 커밋). 5xx/네트워크 에러는 기존처럼 throw하여 재시도 |
-| 15  | 테스트 범위                             | failed 분기 / 빈 reviews 분기 / critical suggestion 포맷 / Octokit 4xx 실패(커밋) / Octokit 5xx 실패(재throw) 핵심 분기만 단위 테스트                 |
+| #   | 항목                                    | 결정                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Octokit 인증을 위한 installationId 확보 | ~~Kafka 페이로드에 `installationId`/`owner`/`repo`를 싣고 ai-server가 echo-back~~ → **폐기**. ai-server의 실제 스키마(`ReviewCompletedEvent`/`ReviewFailedEvent`)는 이 필드들을 되돌려주지 않으며, 별도 리포지토리라 계약을 바꿀 수 없음. 대신 dispatch 시점에 Redis 기반 `ReviewJobContextStore`(`review:context:{reviewJobId}`)에 `{owner, repo, prNumber, installationId}`를 로컬 저장하고, 결과 이벤트 수신 시 `reviewJobId`로 조회해서 사용 |
+| 2   | PR 등록 방식                            | `Pulls.createReview` 1회 호출로 일괄 등록 (`comments[]` + `body`)                                                                                                                                                                                                                                                                                                                                                                                |
+| 3   | 리뷰 `event` 타입                       | 항상 `'COMMENT'` 고정. 자동 `APPROVE`/`REQUEST_CHANGES` 없음 (AI가 승인/변경요청 권한을 갖지 않음)                                                                                                                                                                                                                                                                                                                                               |
+| 4   | `reviews: []`(findings 없음) 처리       | `summary`만 담아 빈 `comments: []`로 `createReview` 호출 (Gemini Code Assist 스타일 "리뷰 완료" 코멘트)                                                                                                                                                                                                                                                                                                                                          |
+| 5   | `failed` 케이스 PR 반영                 | PR에는 아무것도 남기지 않음. Discord 알림만 발송                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 6   | Discord 알림 라이브러리                 | `dicoshot-nest`(`DicoshotModule`/`DicoshotService`) 사용. `sendCustom({title, description, color})`으로 커스텀 알림                                                                                                                                                                                                                                                                                                                              |
+| 7   | Discord 알림 범위                       | (a) `ReviewFailedPayload` 수신 시 (b) Orchestrator의 GitHub API 호출 자체 실패 시, 둘 다 알림                                                                                                                                                                                                                                                                                                                                                    |
+| 8   | Discord 알림 전송 자체가 실패하는 경우  | 로깅만 하고 무시 (원본 에러/Kafka 재시도 로직에 영향 주지 않음)                                                                                                                                                                                                                                                                                                                                                                                  |
+| 9   | 앱 시작/종료 알림                       | `notifyOnStartup`/`notifyOnShutdown` 기본값(`true`) 유지                                                                                                                                                                                                                                                                                                                                                                                         |
+| 10  | `DISCORD_WEBHOOK_URL` 누락 시           | 부팅 실패하지 않음 (라이브러리 기본 동작인 자동 비활성화에 위임, 필수 환경변수로 강제하지 않음)                                                                                                                                                                                                                                                                                                                                                  |
+| 11  | suggestion 블록 적용 범위               | `severity === 'critical'`인 finding만 ` ```suggestion ` 코드 제안 블록 적용. 나머지는 일반 텍스트                                                                                                                                                                                                                                                                                                                                                |
+| 12  | 이전 헤드 기준 리뷰 정리                | 정리하지 않음. `synchronize`로 재실행될 때마다 새 리뷰가 누적됨 (Gemini와 동일한 동작)                                                                                                                                                                                                                                                                                                                                                           |
+| 13  | `confidence` 필드 활용                  | 필터링 없음. 참고용으로 댓글 본문에만 노출 (필터링은 AI 분석 서비스의 책임 영역)                                                                                                                                                                                                                                                                                                                                                                 |
+| 14  | "영구적으로 실패하는" completed 메시지  | Octokit `RequestError.status`가 4xx면 재시도하지 않고 로그+Discord 알림 후 정상 종료 처리(offset 커밋). 5xx/네트워크 에러는 기존처럼 throw하여 재시도                                                                                                                                                                                                                                                                                            |
+| 15  | 테스트 범위                             | failed 분기 / 빈 reviews 분기 / critical suggestion 포맷 / Octokit 4xx 실패(커밋) / Octokit 5xx 실패(재throw) 핵심 분기만 단위 테스트                                                                                                                                                                                                                                                                                                            |
 
 ---
 
@@ -28,21 +28,25 @@
 src/
 ├── app.module.ts                                # DicoshotModule.register(...) import 추가
 │
+├── redis/
+│   ├── review-job-context.type.ts                # 신규 — { owner, repo, prNumber, installationId }
+│   └── review-job-context.store.ts                # 신규 — Redis에 dispatch 시점 컨텍스트 저장/조회 (TTL 1h)
+│
 ├── review-orchestrator/
 │   ├── review-orchestrator.module.ts             # 신규 — REVIEW_ORCHESTRATOR provider, DicoshotModule import
 │   ├── review-orchestrator.interface.ts          # 변경 없음
-│   ├── review-orchestrator.service.ts            # 신규 — 실제 구현체
+│   ├── review-orchestrator.service.ts            # 신규 — 실제 구현체, ReviewJobContextStore 주입
 │   ├── review-orchestrator.service.spec.ts        # 신규 — 단위 테스트
 │   ├── review-comment.formatter.ts                # 신규 — finding[] → Octokit comments[] 매핑 (suggestion 블록 포함)
 │   └── dto/
-│       ├── review-completed.payload.ts            # installationId 필드 추가
-│       └── review-failed.payload.ts                # installationId 필드 추가
+│       ├── review-completed.payload.ts            # ai-server 실제 스키마와 동일 (owner/repo/installationId 없음)
+│       └── review-failed.payload.ts                # ai-server 실제 스키마와 동일 (owner/repo/installationId 없음)
 │
-├── pr-data-collector/
-│   ├── dto/
-│   │   ├── review-request.payload.ts               # installationId 필드 추가
-│   │   └── collect-pr-data.command.ts              # 변경 없음 (이미 installationId 보유)
-│   └── pr-data-collector.service.ts                 # collect() 반환값에 installationId 포함
+├── review-dispatcher/
+│   └── review-dispatcher.service.ts               # dispatch(payload, context) — jobState와 함께 ReviewJobContextStore에도 기록
+│
+├── webhook/
+│   └── webhook.service.ts                         # dispatch() 호출 시 owner/repo/prNumber/installationId를 context로 전달
 │
 └── review-result-consumer/
     └── review-result-consumer.module.ts             # placeholder provider 제거, ReviewOrchestratorModule import
@@ -50,25 +54,46 @@ src/
 
 ---
 
-## DTO 변경
+## DTO / 저장소 변경
 
-### `ReviewRequestPayload`
+> 아래 세 DTO는 ai-server(Kafka 상대편)의 실제 pydantic 스키마와 정합된 형태이며 변경하지 않는다 (`docs/kafka-event-schema.md` 참고). `owner`/`repo`/`installationId`는 ai-server가 보내지 않으므로 Kafka 페이로드가 아니라 아래 `ReviewJobContextStore`를 통해 로컬에서 조달한다.
+
+### `ReviewJobContext` / `ReviewJobContextStore` (신규, `src/redis/`)
 
 ```typescript
-export interface ReviewRequestPayload {
-  reviewJobId: string;
-  repositoryId: number;
-  prNumber: number;
-  headSha: string;
+export interface ReviewJobContext {
   owner: string;
   repo: string;
-  installationId: number; // 추가
-  diff: string;
-  changedFiles: ChangedFile[];
+  prNumber: number;
+  installationId: number;
+}
+
+@Injectable()
+export class ReviewJobContextStore {
+  async get(reviewJobId: string): Promise<ReviewJobContext | null> { ... }
+  async set(reviewJobId: string, context: ReviewJobContext): Promise<void> { ... } // key: review:context:{reviewJobId}, TTL 1h
 }
 ```
 
-### `ReviewCompletedPayload`
+### `ReviewDispatcherService.dispatch()` 변경
+
+```typescript
+async dispatch(
+  payload: ReviewRequestPayload,
+  context: ReviewJobContext,
+): Promise<void> {
+  ...
+  await Promise.all([
+    this.jobStateStore.set(reviewJobId, 'requested'),
+    this.reviewJobContextStore.set(reviewJobId, context), // 신규
+  ]);
+  ...
+}
+```
+
+`WebhookService`가 `owner`/`repo`/`prNumber`/`payload.installation.id`를 `context`로 넘긴다.
+
+### `ReviewCompletedPayload` / `ReviewFailedPayload` (변경 없음, ai-server 실제 응답과 동일)
 
 ```typescript
 export interface ReviewCompletedPayload {
@@ -76,9 +101,6 @@ export interface ReviewCompletedPayload {
   repositoryId: number;
   prNumber: number;
   headSha: string;
-  owner: string;
-  repo: string;
-  installationId: number; // 추가
   summary: string;
   reviews: {
     severity: 'critical' | 'major' | 'minor' | 'suggestion';
@@ -90,40 +112,15 @@ export interface ReviewCompletedPayload {
     evidence: string[];
     suggestedFix?: string;
   }[];
+  modelVersion: string;
+  promptVersion: string;
 }
-```
 
-### `ReviewFailedPayload`
-
-```typescript
 export interface ReviewFailedPayload {
   reviewJobId: string;
-  repositoryId: number;
-  prNumber: number;
   headSha: string;
-  owner: string; // 추가 (코드 리뷰 반영: Discord 알림 가독성)
-  repo: string; // 추가 (코드 리뷰 반영: Discord 알림 가독성)
-  installationId: number; // 추가
   reason: 'parse_error' | 'timeout' | 'server_error';
 }
-```
-
-> **외부 의존**: LLM 분석 서비스(별도 팀원 구현)가 `ReviewRequestPayload.installationId`/`owner`/`repo`를 그대로 결과 payload에 echo-back 해주는 계약 변경 필요. 이 리포지토리 범위 밖이므로 별도로 전달.
-
-### `PrDataCollectorService.collect()` 변경
-
-```typescript
-return {
-  reviewJobId: `${repositoryId}_${prNumber}_${headSha}`,
-  repositoryId,
-  prNumber,
-  headSha,
-  owner,
-  repo,
-  installationId, // 추가
-  diff,
-  changedFiles,
-};
 ```
 
 ---
@@ -136,19 +133,27 @@ return {
 async handle(
   payload: ReviewCompletedPayload | ReviewFailedPayload,
 ): Promise<void> {
+  const context = await this.reviewJobContextStore.get(payload.reviewJobId);
+  if (!context) {
+    this.logger.error(
+      `job context 없음(TTL 만료 또는 미기록), 스킵: ${payload.reviewJobId}`,
+    );
+    return;
+  }
+
   if ('reason' in payload) {
-    await this.notifyFailure(payload);
+    await this.notifyFailure(payload, context);
     return;
   }
 
   const octokit = await this.installationTokenManager.getOctokit(
-    payload.installationId,
+    context.installationId,
   );
 
   try {
     await octokit.rest.pulls.createReview({
-      owner: payload.owner,
-      repo: payload.repo,
+      owner: context.owner,
+      repo: context.repo,
       pull_number: payload.prNumber,
       commit_id: payload.headSha,
       event: 'COMMENT',
@@ -156,7 +161,7 @@ async handle(
       comments: buildReviewComments(payload.reviews),
     });
   } catch (err) {
-    await this.notifyOrchestratorError(payload, err);
+    await this.notifyOrchestratorError(payload, context, err);
 
     if (err instanceof RequestError && err.status >= 400 && err.status < 500) {
       this.logger.error(
@@ -172,6 +177,7 @@ async handle(
 ```
 
 - `'reason' in payload`로 completed/failed 분기 (DTO에 별도 discriminant 필드 추가하지 않고 기존 형태 유지)
+- `context`가 없으면(TTL 만료 등) GitHub API를 호출할 owner/repo/installationId를 알 수 없으므로 조용히 스킵한다 (재시도해도 채워지지 않는 영구 실패이므로 throw하지 않음)
 - `JobStateStore`/`IdempotencyStore` 기록은 건드리지 않음 — 기존처럼 `ReviewResultConsumerService`가 `handle()` 성공(또는 4xx swallow로 정상 반환) 직후 처리
 
 ### `review-comment.formatter.ts` — `buildReviewComments()`
@@ -224,21 +230,25 @@ function formatCommentBody(
 ### Discord 알림 — `notifyFailure()` / `notifyOrchestratorError()`
 
 ```typescript
-private async notifyFailure(payload: ReviewFailedPayload): Promise<void> {
+private async notifyFailure(
+  payload: ReviewFailedPayload,
+  context: ReviewJobContext,
+): Promise<void> {
   await this.safeNotify({
     title: 'AI 리뷰 분석 실패',
-    description: `${payload.owner}/${payload.repo}#${payload.prNumber} (reviewJobId=${payload.reviewJobId}) reason=${payload.reason}`,
+    description: `${context.owner}/${context.repo}#${context.prNumber} (reviewJobId=${payload.reviewJobId}) reason=${payload.reason}`,
     color: 'danger',
   });
 }
 
 private async notifyOrchestratorError(
   payload: ReviewCompletedPayload,
+  context: ReviewJobContext,
   err: unknown,
 ): Promise<void> {
   await this.safeNotify({
     title: 'GitHub 리뷰 등록 실패',
-    description: `${payload.owner}/${payload.repo}#${payload.prNumber} (reviewJobId=${payload.reviewJobId}): ${err instanceof Error ? err.message : String(err)}`,
+    description: `${context.owner}/${context.repo}#${payload.prNumber} (reviewJobId=${payload.reviewJobId}): ${err instanceof Error ? err.message : String(err)}`,
     color: 'danger',
   });
 }
@@ -316,11 +326,12 @@ npm install dicoshot-nest dicoshot-core
 
 `ReviewOrchestratorService.handle()`:
 
-1. `ReviewFailedPayload` 수신 → GitHub API 호출 없이 `dicoshot.sendCustom()`만 호출되는지
-2. `ReviewCompletedPayload`, `reviews: []` → `createReview`가 `comments: []`, `body: summary`로 호출되는지
-3. `severity: 'critical'` + `suggestedFix` 있는 finding → 댓글 body에 ` ```suggestion ` 블록이 포함되는지, 나머지 severity는 일반 텍스트인지
-4. `createReview`가 `RequestError(status=422)`를 던짐 → `sendCustom()` 호출 후 에러를 삼키고 정상 반환(rethrow 안 함)
-5. `createReview`가 `RequestError(status=500)` 또는 일반 에러를 던짐 → `sendCustom()` 호출 후 에러를 재throw
+1. `ReviewJobContextStore`에 컨텍스트가 없음 → GitHub API/Discord 알림 모두 호출하지 않고 조용히 스킵
+2. `ReviewFailedPayload` 수신 → GitHub API 호출 없이 `dicoshot.sendCustom()`만 호출되는지
+3. `ReviewCompletedPayload`, `reviews: []` → `createReview`가 `comments: []`, `body: summary`로 호출되는지
+4. `severity: 'critical'` + `suggestedFix` 있는 finding → 댓글 body에 ` ```suggestion ` 블록이 포함되는지, 나머지 severity는 일반 텍스트인지
+5. `createReview`가 `RequestError(status=422)`를 던짐 → `sendCustom()` 호출 후 에러를 삼키고 정상 반환(rethrow 안 함)
+6. `createReview`가 `RequestError(status=500)` 또는 일반 에러를 던짐 → `sendCustom()` 호출 후 에러를 재throw
 
 Octokit, `DicoshotService`, `InstallationTokenManager`는 모두 mock 처리.
 
@@ -328,7 +339,6 @@ Octokit, `DicoshotService`, `InstallationTokenManager`는 모두 mock 처리.
 
 ## 이번 구현 범위 외
 
-- 외부 LLM 리뷰 서비스가 실제로 `installationId`를 echo-back 하도록 구현하는 것 (다른 팀원 작업, 계약만 정의)
 - `/dovi review` 같은 PR 코멘트 기반 수동 재실행 트리거 (이번 ReviewOrchestrator 범위가 아니라 Webhook 쪽 신규 기능, 별도 작업)
 - 동일 PR에 누적된 과거 AI 리뷰를 정리(dismiss)하는 기능
 - `confidence` 기반 필터링 (AI 분석 서비스 책임 영역)

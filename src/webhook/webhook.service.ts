@@ -33,6 +33,7 @@ export class WebhookService {
         repo,
         prNumber: payload.pull_request.number,
         headSha: payload.pull_request.head.sha,
+        baseSha: payload.pull_request.base.sha,
         repositoryId: payload.repository.id,
       })
       .then((result) => {
@@ -42,7 +43,12 @@ export class WebhookService {
           );
           return;
         }
-        return this.reviewDispatcherService.dispatch(result);
+        return this.reviewDispatcherService.dispatch(result, {
+          owner,
+          repo,
+          prNumber: payload.pull_request.number,
+          installationId: payload.installation.id,
+        });
       })
       .catch((err: unknown) => {
         this.logger.error(

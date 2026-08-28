@@ -3,9 +3,6 @@ export interface ReviewCompletedPayload {
   repositoryId: number;
   prNumber: number;
   headSha: string;
-  owner: string;
-  repo: string;
-  installationId: number;
   summary: string;
   reviews: {
     severity: 'critical' | 'major' | 'minor' | 'suggestion';
@@ -17,4 +14,6 @@ export interface ReviewCompletedPayload {
     evidence: string[];
     suggestedFix?: string;
   }[];
+  modelVersion: string;
+  promptVersion: string;
 }

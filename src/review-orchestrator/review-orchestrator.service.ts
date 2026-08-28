@@ -3,6 +3,8 @@ import { DicoshotService } from 'dicoshot-nest';
 import type { CustomMessageOptions } from 'dicoshot-nest';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
+import { ReviewJobContextStore } from '../redis/review-job-context.store';
+import type { ReviewJobContext } from '../redis/review-job-context.type';
 import { buildReviewComments } from './review-comment.formatter';
 import type { ReviewOrchestrator } from './review-orchestrator.interface';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
@@ -26,25 +28,34 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
   constructor(
     @Inject(INSTALLATION_TOKEN_MANAGER)
     private readonly installationTokenManager: InstallationTokenManager,
+    private readonly reviewJobContextStore: ReviewJobContextStore,
     private readonly dicoshot: DicoshotService,
   ) {}
 
   async handle(
     payload: ReviewCompletedPayload | ReviewFailedPayload,
   ): Promise<void> {
+    const context = await this.reviewJobContextStore.get(payload.reviewJobId);
+    if (!context) {
+      this.logger.error(
+        `job context 없음(TTL 만료 또는 미기록), 스킵: ${payload.reviewJobId}`,
+      );
+      return;
+    }
+
     if ('reason' in payload) {
-      await this.notifyFailure(payload);
+      await this.notifyFailure(payload, context);
       return;
     }
 
     const octokit = await this.installationTokenManager.getOctokit(
-      payload.installationId,
+      context.installationId,
     );
 
     try {
       await octokit.rest.pulls.createReview({
-        owner: payload.owner,
-        repo: payload.repo,
+        owner: context.owner,
+        repo: context.repo,
         pull_number: payload.prNumber,
         commit_id: payload.headSha,
         event: 'COMMENT',
@@ -52,7 +63,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         comments: buildReviewComments(payload.reviews),
       });
     } catch (err) {
-      await this.notifyOrchestratorError(payload, err);
+      await this.notifyOrchestratorError(payload, context, err);
 
       if (isClientError(err)) {
         this.logger.error(
@@ -66,21 +77,25 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     }
   }
 
-  private async notifyFailure(payload: ReviewFailedPayload): Promise<void> {
+  private async notifyFailure(
+    payload: ReviewFailedPayload,
+    context: ReviewJobContext,
+  ): Promise<void> {
     await this.safeNotify({
       title: 'AI 리뷰 분석 실패',
-      description: `${payload.owner}/${payload.repo}#${payload.prNumber} (reviewJobId=${payload.reviewJobId}) reason=${payload.reason}`,
+      description: `${context.owner}/${context.repo}#${context.prNumber} (reviewJobId=${payload.reviewJobId}) reason=${payload.reason}`,
       color: 'danger',
     });
   }
 
   private async notifyOrchestratorError(
     payload: ReviewCompletedPayload,
+    context: ReviewJobContext,
     err: unknown,
   ): Promise<void> {
     await this.safeNotify({
       title: 'GitHub 리뷰 등록 실패',
-      description: `${payload.owner}/${payload.repo}#${payload.prNumber} (reviewJobId=${payload.reviewJobId}): ${err instanceof Error ? err.message : String(err)}`,
+      description: `${context.owner}/${context.repo}#${payload.prNumber} (reviewJobId=${payload.reviewJobId}): ${err instanceof Error ? err.message : String(err)}`,
       color: 'danger',
     });
   }

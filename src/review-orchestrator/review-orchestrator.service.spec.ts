@@ -1,5 +1,7 @@
 import type { DicoshotService } from 'dicoshot-nest';
 import { ReviewOrchestratorService } from './review-orchestrator.service';
+import type { ReviewJobContextStore } from '../redis/review-job-context.store';
+import type { ReviewJobContext } from '../redis/review-job-context.type';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
 
@@ -10,29 +12,31 @@ function makeHttpError(status: number): Error & { status: number } {
 describe('ReviewOrchestratorService', () => {
   let createReview: jest.Mock;
   let installationTokenManager: { getOctokit: jest.Mock };
+  let reviewJobContextStore: { get: jest.Mock };
   let dicoshot: { sendCustom: jest.Mock };
   let service: ReviewOrchestratorService;
+
+  const context: ReviewJobContext = {
+    owner: 'owner',
+    repo: 'repo',
+    prNumber: 1,
+    installationId: 123,
+  };
 
   const completedPayload: ReviewCompletedPayload = {
     reviewJobId: 'repo_1_sha',
     repositoryId: 1,
     prNumber: 1,
     headSha: 'sha',
-    owner: 'owner',
-    repo: 'repo',
-    installationId: 123,
     summary: 'ok',
     reviews: [],
+    modelVersion: 'qwen2.5-coder-32b',
+    promptVersion: 'v1',
   };
 
   const failedPayload: ReviewFailedPayload = {
     reviewJobId: 'repo_1_sha',
-    repositoryId: 1,
-    prNumber: 1,
     headSha: 'sha',
-    owner: 'owner',
-    repo: 'repo',
-    installationId: 123,
     reason: 'timeout',
   };
 
@@ -43,12 +47,23 @@ describe('ReviewOrchestratorService', () => {
         .fn()
         .mockResolvedValue({ rest: { pulls: { createReview } } }),
     };
+    reviewJobContextStore = { get: jest.fn().mockResolvedValue(context) };
     dicoshot = { sendCustom: jest.fn() };
 
     service = new ReviewOrchestratorService(
       installationTokenManager,
+      reviewJobContextStore as unknown as ReviewJobContextStore,
       dicoshot as unknown as DicoshotService,
     );
+  });
+
+  it('job context가 없으면 아무 것도 하지 않고 스킵한다', async () => {
+    reviewJobContextStore.get.mockResolvedValue(null);
+
+    await service.handle(completedPayload);
+
+    expect(installationTokenManager.getOctokit).not.toHaveBeenCalled();
+    expect(dicoshot.sendCustom).not.toHaveBeenCalled();
   });
 
   it('failed payload는 GitHub API를 호출하지 않고 Discord 알림만 보낸다', async () => {

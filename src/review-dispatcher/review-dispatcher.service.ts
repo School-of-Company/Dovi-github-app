@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { KafkaProducerService } from '../kafka/kafka-producer.service';
 import { IdempotencyStore } from '../redis/idempotency.store';
 import { JobStateStore } from '../redis/job-state.store';
+import { ReviewJobContextStore } from '../redis/review-job-context.store';
+import type { ReviewJobContext } from '../redis/review-job-context.type';
 import type { ReviewRequestPayload } from '../pr-data-collector/dto/review-request.payload';
 
 @Injectable()
@@ -11,10 +13,14 @@ export class ReviewDispatcherService {
   constructor(
     private readonly idempotencyStore: IdempotencyStore,
     private readonly jobStateStore: JobStateStore,
+    private readonly reviewJobContextStore: ReviewJobContextStore,
     private readonly kafkaProducer: KafkaProducerService,
   ) {}
 
-  async dispatch(payload: ReviewRequestPayload): Promise<void> {
+  async dispatch(
+    payload: ReviewRequestPayload,
+    context: ReviewJobContext,
+  ): Promise<void> {
     const { reviewJobId } = payload;
 
     const [alreadyProcessed, state] = await Promise.all([
@@ -32,7 +38,10 @@ export class ReviewDispatcherService {
       return;
     }
 
-    await this.jobStateStore.set(reviewJobId, 'requested');
+    await Promise.all([
+      this.jobStateStore.set(reviewJobId, 'requested'),
+      this.reviewJobContextStore.set(reviewJobId, context),
+    ]);
 
     try {
       await this.kafkaProducer.send(
