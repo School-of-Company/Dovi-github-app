@@ -8,6 +8,7 @@ allowed-tools: Bash(git *:*), Bash(bash *create-pr.sh:*), Bash(cat *:*), Read, W
 
 ```bash
 git branch --show-current
+git fetch origin develop --quiet 2>/dev/null || true
 git log origin/develop..HEAD --oneline 2>/dev/null || git log --oneline -15
 git diff origin/develop...HEAD --stat 2>/dev/null || git diff HEAD~5...HEAD --stat
 git diff origin/develop...HEAD 2>/dev/null || git diff HEAD~5...HEAD
@@ -27,11 +28,13 @@ Read `${CLAUDE_SKILL_DIR}/references/commit-conventions.md` for commit type and 
 ## Step 3 — Generate PR Content
 
 **Title** — Generate 3 options in the format `[scope] description`:
+
 - Scope: determine from changed file paths and directory structure — infer the domain from path segments. Use `[global]` / `[ci/cd]` for cross-cutting changes only. Wrap in brackets: `[auth]`, `[user]`, etc.
 - Description: Korean, concise, no emojis, max 50 characters total
 - Wrap class names, method names, annotations, file names, and technical terms in backticks (e.g., `@Transactional`, `QueryProjectServiceImpl`, `SKILL.md`)
 
 **Body** — Follow the `.github/PULL_REQUEST_TEMPLATE.md` structure:
+
 - Korean 합쇼체: `~하였습니다`, `~되었습니다`, `~추가하였습니다`
 - No emojis
 - Max 2500 characters
