@@ -53,8 +53,8 @@ export class WebhookService {
         return this.reviewDispatcherService.dispatch(result, {
           owner,
           repo,
-          prNumber: payload.pull_request.number,
-          installationId: payload.installation.id,
+          prNumber: payload.pull_request!.number,
+          installationId: payload.installation!.id,
         });
       })
       .catch((err: unknown) => {
@@ -106,11 +106,19 @@ export class WebhookService {
         }
         // 같은 커밋에 멘션만 반복돼도 매번 새 리뷰가 돌도록
         // commentId를 섞어 별도 job으로 만든다 (idempotency 우회).
-        return this.reviewDispatcherService.dispatch({
-          ...result,
-          reviewJobId: `${result.reviewJobId}_c${comment.id}`,
-          replyContext,
-        });
+        return this.reviewDispatcherService.dispatch(
+          {
+            ...result,
+            reviewJobId: `${result.reviewJobId}_c${comment.id}`,
+            replyContext,
+          },
+          {
+            owner,
+            repo,
+            prNumber: pr.number,
+            installationId: payload.installation!.id,
+          },
+        );
       })
       .catch((err: unknown) => {
         this.logger.error(

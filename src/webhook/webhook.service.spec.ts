@@ -78,6 +78,12 @@ describe('WebhookService', () => {
           author: 'alice',
         },
       }),
+      {
+        owner: 'owner',
+        repo: 'repo',
+        prNumber: 1,
+        installationId: 10,
+      },
     );
   });
 
