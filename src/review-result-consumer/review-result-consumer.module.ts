@@ -1,23 +1,9 @@
 import { Module } from '@nestjs/common';
 import { ReviewResultConsumerService } from './review-result-consumer.service';
-import { REVIEW_ORCHESTRATOR } from '../review-orchestrator/review-orchestrator.interface';
-import type { ReviewOrchestrator } from '../review-orchestrator/review-orchestrator.interface';
-
-const notImplementedOrchestrator: ReviewOrchestrator = {
-  handle: () => {
-    throw new Error(
-      'ReviewOrchestrator is not implemented. Provide a concrete class.',
-    );
-  },
-};
+import { ReviewOrchestratorModule } from '../review-orchestrator/review-orchestrator.module';
 
 @Module({
-  providers: [
-    ReviewResultConsumerService,
-    {
-      provide: REVIEW_ORCHESTRATOR,
-      useValue: notImplementedOrchestrator,
-    },
-  ],
+  imports: [ReviewOrchestratorModule],
+  providers: [ReviewResultConsumerService],
 })
 export class ReviewResultConsumerModule {}

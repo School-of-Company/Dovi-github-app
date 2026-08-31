@@ -50,7 +50,12 @@ export class WebhookService {
           );
           return;
         }
-        return this.reviewDispatcherService.dispatch(result);
+        return this.reviewDispatcherService.dispatch(result, {
+          owner,
+          repo,
+          prNumber: payload.pull_request.number,
+          installationId: payload.installation.id,
+        });
       })
       .catch((err: unknown) => {
         this.logger.error(
