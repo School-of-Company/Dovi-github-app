@@ -68,25 +68,24 @@ export class PrDataCollectorService {
     const octokit =
       await this.installationTokenManager.getOctokit(installationId);
 
-    const diffPromise = this.fetchDiff(octokit, owner, repo, prNumber);
-    const changedFilesPromise = this.fetchChangedFiles(
-      octokit,
-      owner,
-      repo,
-      prNumber,
-    );
-    const contextFilesPromise = this.fetchContextFiles(
-      octokit,
-      owner,
-      repo,
-      headSha,
-    );
+    const [diffResult, changedFilesResult, contextFilesResult] =
+      await Promise.allSettled([
+        this.fetchDiff(octokit, owner, repo, prNumber),
+        this.fetchChangedFiles(octokit, owner, repo, prNumber),
+        this.fetchContextFiles(octokit, owner, repo, headSha),
+      ]);
 
-    const diff = await diffPromise;
+    if (diffResult.status === 'rejected') throw diffResult.reason;
+    if (changedFilesResult.status === 'rejected')
+      throw changedFilesResult.reason;
+    if (contextFilesResult.status === 'rejected')
+      throw contextFilesResult.reason;
+
+    const diff = diffResult.value;
     if (diff === null) return null;
 
-    const changedFiles = await changedFilesPromise;
-    const contextFiles = await contextFilesPromise;
+    const changedFiles = changedFilesResult.value;
+    const contextFiles = contextFilesResult.value;
 
     return {
       reviewJobId: `${repositoryId}:${prNumber}:${headSha}`,
