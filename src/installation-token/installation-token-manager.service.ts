@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
 import type { Redis } from 'ioredis';
+import { withRetry } from '../common/retry';
 import { REDIS_CLIENT } from '../redis/redis.constants';
 import type { InstallationTokenManager } from './installation-token-manager.interface';
 
@@ -32,10 +33,9 @@ export class InstallationTokenManagerService implements InstallationTokenManager
       return new Octokit({ auth: cachedToken });
     }
 
-    const { token } = await this.appAuth({
-      type: 'installation',
-      installationId,
-    });
+    const { token } = await withRetry(() =>
+      this.appAuth({ type: 'installation', installationId }),
+    );
     await this.redis.set(cacheKey, token, 'EX', TOKEN_TTL_SECONDS);
 
     return new Octokit({ auth: token });
