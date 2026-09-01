@@ -29,6 +29,27 @@ const CONTEXT_ROOT_CANDIDATES = [
 const CONTEXT_DOCS_PREFIX = 'docs/';
 const CONTEXT_FILE_SIZE_LIMIT = 200 * 1024;
 const SECRET_EXTENSIONS = ['.env', '.pem', '.p8', '.key'];
+const RETRY_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 1000;
+
+// 가정/학교망 특성상 GitHub API로 나가는 아웃바운드 연결이 간헐적으로
+// 몇 초씩 타임아웃되는 경우가 있어, 짧은 backoff로 재시도한다.
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < RETRY_ATTEMPTS) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, RETRY_DELAY_MS * attempt),
+        );
+      }
+    }
+  }
+  throw lastErr;
+}
 
 // ai-server의 app/review/context.py::_is_secret과 동일한 규칙 (1차 방어)
 function isSecretPath(path: string): boolean {
@@ -104,12 +125,14 @@ export class PrDataCollectorService {
     repo: string,
     prNumber: number,
   ): Promise<string | null> {
-    const response = await octokit.rest.pulls.get({
-      owner,
-      repo,
-      pull_number: prNumber,
-      mediaType: { format: 'diff' },
-    });
+    const response = await withRetry(() =>
+      octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: prNumber,
+        mediaType: { format: 'diff' },
+      }),
+    );
 
     const diff = response.data as unknown;
     if (typeof diff !== 'string') {
@@ -134,12 +157,14 @@ export class PrDataCollectorService {
     repo: string,
     prNumber: number,
   ): Promise<ChangedFile[]> {
-    const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
-      owner,
-      repo,
-      pull_number: prNumber,
-      per_page: 100,
-    });
+    const files = await withRetry(() =>
+      octokit.paginate(octokit.rest.pulls.listFiles, {
+        owner,
+        repo,
+        pull_number: prNumber,
+        per_page: 100,
+      }),
+    );
 
     return files
       .filter((file): file is typeof file & { status: ChangedFileStatus } =>
