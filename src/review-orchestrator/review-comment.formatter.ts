@@ -32,7 +32,7 @@ function formatCommentBody(review: Finding): string {
   const header = `**[${review.severity}] ${review.title}** (신뢰도: ${confidence}%)`;
   const evidenceList = Array.isArray(review.evidence) ? review.evidence : [];
   const evidence = evidenceList.length
-    ? `\n\n${evidenceList.map((e) => `- ${e}`).join('\n')}`
+    ? `\n\n\`\`\`diff\n${evidenceList.join('\n')}\n\`\`\``
     : '';
 
   if (review.severity === 'critical' && review.suggestedFix) {
