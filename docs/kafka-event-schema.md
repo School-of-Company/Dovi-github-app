@@ -52,11 +52,14 @@ Kafka 메시지 key는 `reviewJobId`(문자열)를 그대로 사용한다.
 
 `ChangedFile`:
 
-| 필드       | 타입                                              | 비고                                                                                        |
-| ---------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `filePath` | string                                            | GitHub API의 `filename`을 `filePath`로 매핑해서 전송                                        |
-| `status`   | `'added' \| 'modified' \| 'removed' \| 'renamed'` | ai-server가 허용하는 4종만 전송. `copied`/`changed`/`unchanged`인 파일은 수집 단계에서 제외 |
-| `patch`    | string?                                           |                                                                                             |
+| 필드       | 타입                                              | 비고                                                                                                                                                                                                                                                                                                                                                     |
+| ---------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `filePath` | string                                            | GitHub API의 `filename`을 `filePath`로 매핑해서 전송                                                                                                                                                                                                                                                                                                     |
+| `status`   | `'added' \| 'modified' \| 'removed' \| 'renamed'` | ai-server가 허용하는 4종만 전송. `copied`/`changed`/`unchanged`인 파일은 수집 단계에서 제외                                                                                                                                                                                                                                                              |
+| `patch`    | string?                                           |                                                                                                                                                                                                                                                                                                                                                          |
+| `content`  | string?                                           | 변경 후 파일 전체 원문 (UTF-8). ai-server의 AST context 기능(`app/review/chunking.py`)이 변경된 함수/클래스 전체를 리뷰에 포함시키는 데 사용. `removed` 파일, tree-sitter 미지원 확장자(`.py`/`.js`/`.jsx`/`.mjs`/`.cjs`/`.ts`/`.tsx` 외), secret 경로, 200KB(`CHANGED_FILE_CONTENT_SIZE_LIMIT`) 초과 시 생략 — 이 경우 ai-server는 hunk만으로 리뷰한다. |
+
+- Kafka 브로커 기본 `message.max.bytes`(~1MB)를 넘기지 않도록, PR 하나에서 보내는 `changedFiles[].content` 총합에 512KB(`CHANGED_FILE_CONTENT_TOTAL_BUDGET`) 예산을 둔다. 초과하면 `PrDataCollectorService`가 큰 파일부터 `content`를 비운다(파일 자체는 `patch`와 함께 그대로 남는다) — GitHub Contents API 자체도 파일당 1MB 상한이 있어 개별 파일 크기만으로는 메시지 전체 크기를 보장할 수 없기 때문.
 
 `ContextFile` (ai-server의 `## Project Context` 프롬프트 섹션을 채우는 값, 노션 기획 7.2절 "DOVI.md가 프로젝트 컨텍스트 진입점"):
 
