@@ -30,4 +30,17 @@ describe('buildReviewComments', () => {
 
     expect(body).not.toContain('```diff');
   });
+
+  it('critical severity여도 suggestedFix를 suggestion 블록이 아닌 평문으로 렌더링한다', () => {
+    const [{ body }] = buildReviewComments([
+      {
+        ...baseFinding,
+        severity: 'critical',
+        suggestedFix: '이 부분을 이렇게 바꾸는 게 좋습니다.',
+      },
+    ]);
+
+    expect(body).not.toContain('```suggestion');
+    expect(body).toContain('제안: 이 부분을 이렇게 바꾸는 게 좋습니다.');
+  });
 });
