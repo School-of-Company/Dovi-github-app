@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
 import type { Redis } from 'ioredis';
+import { createTimedFetch } from '../common/timed-fetch';
 import { withRetry } from '../common/retry';
 import { REDIS_CLIENT } from '../redis/redis.constants';
 import type { InstallationTokenManager } from './installation-token-manager.interface';
@@ -20,9 +21,15 @@ export class InstallationTokenManagerService implements InstallationTokenManager
         'GITHUB_APP_ID or GITHUB_PRIVATE_KEY environment variable is not defined',
       );
     }
+    // 인증 요청도 짧은 타임아웃 fetch로 나가야 withRetry가 재시도할 기회를
+    // 충분히 갖는다 (기본 fetch의 연결 타임아웃은 약 10초로 너무 길다).
+    const authRequest = new Octokit({
+      request: { fetch: createTimedFetch() },
+    }).request;
     this.appAuth = createAppAuth({
       appId,
       privateKey: privateKey.replace(/\\n/g, '\n'),
+      request: authRequest,
     });
   }
 
@@ -30,7 +37,10 @@ export class InstallationTokenManagerService implements InstallationTokenManager
     const cacheKey = this.tokenKey(installationId);
     const cachedToken = await this.redis.get(cacheKey);
     if (cachedToken) {
-      return new Octokit({ auth: cachedToken });
+      return new Octokit({
+        auth: cachedToken,
+        request: { fetch: createTimedFetch() },
+      });
     }
 
     const { token } = await withRetry(() =>
@@ -38,7 +48,7 @@ export class InstallationTokenManagerService implements InstallationTokenManager
     );
     await this.redis.set(cacheKey, token, 'EX', TOKEN_TTL_SECONDS);
 
-    return new Octokit({ auth: token });
+    return new Octokit({ auth: token, request: { fetch: createTimedFetch() } });
   }
 
   private tokenKey(installationId: number): string {
