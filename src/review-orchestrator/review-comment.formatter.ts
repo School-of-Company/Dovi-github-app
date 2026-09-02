@@ -35,10 +35,6 @@ function formatCommentBody(review: Finding): string {
     ? `\n\n\`\`\`diff\n${evidenceList.join('\n')}\n\`\`\``
     : '';
 
-  if (review.severity === 'critical' && review.suggestedFix) {
-    return `${header}\n\n${review.message}${evidence}\n\n\`\`\`suggestion\n${review.suggestedFix}\n\`\`\``;
-  }
-
   const fix = review.suggestedFix ? `\n\n제안: ${review.suggestedFix}` : '';
   return `${header}\n\n${review.message}${evidence}${fix}`;
 }

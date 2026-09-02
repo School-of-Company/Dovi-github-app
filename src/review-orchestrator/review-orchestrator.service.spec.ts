@@ -146,7 +146,7 @@ describe('ReviewOrchestratorService', () => {
     expect(createReview).toHaveBeenCalled();
   });
 
-  it('critical + suggestedFix가 있는 finding은 suggestion 블록으로, 나머지는 일반 텍스트로 포맷한다', async () => {
+  it('severity와 무관하게 suggestedFix는 항상 평문 "제안:" 텍스트로 포맷한다', async () => {
     const payload: ReviewCompletedPayload = {
       ...completedPayload,
       reviews: [
@@ -178,7 +178,8 @@ describe('ReviewOrchestratorService', () => {
     const [{ comments }] = createReview.mock.calls[0] as [
       { comments: { body: string }[] },
     ];
-    expect(comments[0].body).toContain('```suggestion\nconst x = 1;\n```');
+    expect(comments[0].body).not.toContain('```suggestion');
+    expect(comments[0].body).toContain('제안: const x = 1;');
     expect(comments[1].body).not.toContain('```suggestion');
     expect(comments[1].body).toContain('제안: const y = 2;');
   });
