@@ -1,5 +1,5 @@
 const RETRY_ATTEMPTS = 3;
-const RETRY_DELAY_MS = 1000;
+const RETRY_DELAY_MS = 300;
 
 // 가정/학교망 특성상 외부(GitHub API 등)로 나가는 아웃바운드 연결이 간헐적으로
 // 몇 초씩 타임아웃되는 경우가 있어, 짧은 backoff로 재시도한다.
