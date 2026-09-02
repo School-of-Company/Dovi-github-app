@@ -1,8 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrDataCollectorService } from '../pr-data-collector/pr-data-collector.service';
 import { ReviewDispatcherService } from '../review-dispatcher/review-dispatcher.service';
+import { CommentAnswerCollectorService } from '../comment-answer/comment-answer-collector.service';
+import { CommentAnswerDispatcherService } from '../comment-answer/comment-answer-dispatcher.service';
 import type { GithubWebhookPayload } from './dto/github-webhook-payload';
 import type { ReplyContext } from '../pr-data-collector/dto/review-request.payload';
+import type { CommentAnswerRequestPayload } from '../comment-answer/dto/comment-answer-request.payload';
 
 const ALLOWED_PR_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
 
@@ -13,6 +16,8 @@ export class WebhookService {
   constructor(
     private readonly prDataCollectorService: PrDataCollectorService,
     private readonly reviewDispatcherService: ReviewDispatcherService,
+    private readonly commentAnswerCollectorService: CommentAnswerCollectorService,
+    private readonly commentAnswerDispatcherService: CommentAnswerDispatcherService,
   ) {}
 
   handle(event: string, payload: GithubWebhookPayload): void {
@@ -65,8 +70,9 @@ export class WebhookService {
       });
   }
 
-  // 봇 멘션 답글이 오면 기존 리뷰 파이프라인을 그대로 재실행한다.
-  // 답글 내용은 replyContext로 실어 보내 워커가 함께 고려하게 한다.
+  // 봇 멘션 답글이 오면 두 가지로 분기한다.
+  // (1) 리뷰 스레드 답글(in_reply_to_id 있음) → 해당 스레드만 읽는 가벼운 Q&A 플로우
+  // (2) 그 외 최상위 코멘트 멘션 → 기존처럼 전체 리뷰 파이프라인 재실행
   private handleReviewComment(payload: GithubWebhookPayload): void {
     if (!this.shouldProcessReviewComment(payload)) return;
 
@@ -77,9 +83,14 @@ export class WebhookService {
     const comment = payload.comment!;
     const pr = payload.pull_request!;
 
+    if (comment.in_reply_to_id) {
+      this.handleThreadReplyMention(payload, owner, repo, comment, pr);
+      return;
+    }
+
     const replyContext: ReplyContext = {
       commentId: comment.id,
-      inReplyToId: comment.in_reply_to_id ?? null,
+      inReplyToId: null,
       path: comment.path,
       line: comment.line,
       diffHunk: comment.diff_hunk,
@@ -123,6 +134,48 @@ export class WebhookService {
       .catch((err: unknown) => {
         this.logger.error(
           `멘션 답글 재리뷰 실패 (comment #${comment.id})`,
+          err,
+        );
+      });
+  }
+
+  private handleThreadReplyMention(
+    payload: GithubWebhookPayload,
+    owner: string,
+    repo: string,
+    comment: NonNullable<GithubWebhookPayload['comment']>,
+    pr: NonNullable<GithubWebhookPayload['pull_request']>,
+  ): void {
+    const rootCommentId = comment.in_reply_to_id!;
+    const installationId = payload.installation!.id;
+
+    this.commentAnswerCollectorService
+      .collectThread(installationId, owner, repo, pr.number, rootCommentId)
+      .then((thread) => {
+        // 같은 스레드에 멘션이 여러 번 달려도 매번 새 job으로 처리되도록
+        // 트리거한 코멘트의 id를 그대로 job id에 사용한다.
+        const commentJobId = `qa:${payload.repository.id}:${pr.number}:${comment.id}`;
+        const requestPayload: CommentAnswerRequestPayload = {
+          commentJobId,
+          repositoryId: payload.repository.id,
+          prNumber: pr.number,
+          path: comment.path,
+          line: comment.line,
+          diffHunk: comment.diff_hunk,
+          thread,
+        };
+
+        return this.commentAnswerDispatcherService.dispatch(requestPayload, {
+          owner,
+          repo,
+          prNumber: pr.number,
+          installationId,
+          rootCommentId,
+        });
+      })
+      .catch((err: unknown) => {
+        this.logger.error(
+          `코멘트 스레드 Q&A 발행 실패 (comment #${comment.id})`,
           err,
         );
       });
