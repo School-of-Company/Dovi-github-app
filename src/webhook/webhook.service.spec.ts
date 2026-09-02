@@ -33,7 +33,7 @@ describe('WebhookService', () => {
     },
   ];
 
-  let prDataCollector: { collect: jest.Mock };
+  let prDataCollector: { collect: jest.Mock; collectByPrNumber: jest.Mock };
   let dispatcher: { dispatch: jest.Mock };
   let commentAnswerCollector: { collectThread: jest.Mock };
   let commentAnswerDispatcher: { dispatch: jest.Mock };
@@ -42,7 +42,10 @@ describe('WebhookService', () => {
   beforeEach(() => {
     process.env.GITHUB_BOT_LOGIN = 'dovi-code-assist';
 
-    prDataCollector = { collect: jest.fn().mockResolvedValue(collected) };
+    prDataCollector = {
+      collect: jest.fn().mockResolvedValue(collected),
+      collectByPrNumber: jest.fn().mockResolvedValue(collected),
+    };
     dispatcher = { dispatch: jest.fn().mockResolvedValue(undefined) };
     commentAnswerCollector = {
       collectThread: jest.fn().mockResolvedValue(thread),
@@ -227,12 +230,89 @@ describe('WebhookService', () => {
   });
 
   it('처리 대상이 아닌 이벤트는 아무것도 하지 않는다', async () => {
-    service.handle('issue_comment', reviewCommentPayload());
+    service.handle('deployment_status', reviewCommentPayload());
     await flush();
 
     expect(prDataCollector.collect).not.toHaveBeenCalled();
     expect(dispatcher.dispatch).not.toHaveBeenCalled();
     expect(commentAnswerCollector.collectThread).not.toHaveBeenCalled();
     expect(commentAnswerDispatcher.dispatch).not.toHaveBeenCalled();
+  });
+
+  function issueCommentPayload(
+    overrides: Partial<GithubWebhookPayload> = {},
+  ): GithubWebhookPayload {
+    return {
+      action: 'created',
+      installation: { id: 10 },
+      issue: { number: 1, pull_request: { url: 'https://api.github.com/x' } },
+      comment: {
+        id: 999,
+        path: '',
+        line: null,
+        diff_hunk: '',
+        body: '/dovi review',
+      },
+      repository: { id: 1, full_name: 'owner/repo' },
+      sender: { type: 'User', login: 'alice' },
+      ...overrides,
+    };
+  }
+
+  it('PR 대화창에 "/dovi review" 코멘트를 남기면 전체 재리뷰 파이프라인을 실행한다', async () => {
+    service.handle('issue_comment', issueCommentPayload());
+    await flush();
+
+    expect(prDataCollector.collectByPrNumber).toHaveBeenCalledWith(
+      10,
+      'owner',
+      'repo',
+      1,
+      1,
+    );
+    expect(dispatcher.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewJobId: '1_1_sha_c999' }),
+      { owner: 'owner', repo: 'repo', prNumber: 1, installationId: 10 },
+    );
+  });
+
+  it('일반 이슈(PR 아님)에 남긴 "/dovi review"는 무시한다', async () => {
+    service.handle(
+      'issue_comment',
+      issueCommentPayload({ issue: { number: 1 } }),
+    );
+    await flush();
+
+    expect(prDataCollector.collectByPrNumber).not.toHaveBeenCalled();
+  });
+
+  it('명령 문구가 정확히 일치하지 않으면 무시한다', async () => {
+    service.handle(
+      'issue_comment',
+      issueCommentPayload({
+        comment: {
+          id: 999,
+          path: '',
+          line: null,
+          diff_hunk: '',
+          body: '리뷰 좀',
+        },
+      }),
+    );
+    await flush();
+
+    expect(prDataCollector.collectByPrNumber).not.toHaveBeenCalled();
+  });
+
+  it('봇 자신의 "/dovi review" 코멘트는 무시한다 (루프 방지)', async () => {
+    service.handle(
+      'issue_comment',
+      issueCommentPayload({
+        sender: { type: 'Bot', login: 'dovi-code-assist[bot]' },
+      }),
+    );
+    await flush();
+
+    expect(prDataCollector.collectByPrNumber).not.toHaveBeenCalled();
   });
 });
