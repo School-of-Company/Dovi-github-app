@@ -21,6 +21,12 @@ export interface GithubWebhookPayload {
     diff_hunk: string;
     body: string;
   };
+  issue?: {
+    number: number;
+    pull_request?: {
+      url: string;
+    };
+  };
   repository: {
     id: number;
     full_name: string;

@@ -8,6 +8,7 @@ import type { ReplyContext } from '../pr-data-collector/dto/review-request.paylo
 import type { CommentAnswerRequestPayload } from '../comment-answer/dto/comment-answer-request.payload';
 
 const ALLOWED_PR_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
+const REVIEW_COMMAND = '/dovi review';
 
 @Injectable()
 export class WebhookService {
@@ -27,6 +28,10 @@ export class WebhookService {
     }
     if (event === 'pull_request_review_comment') {
       this.handleReviewComment(payload);
+      return;
+    }
+    if (event === 'issue_comment') {
+      this.handleIssueComment(payload);
       return;
     }
   }
@@ -179,6 +184,61 @@ export class WebhookService {
           err,
         );
       });
+  }
+
+  // PR 대화창에 "/dovi review"만 남기면(리뷰 코멘트가 아닌 일반 코멘트) 전체
+  // 리뷰 파이프라인을 재실행한다. webhook payload에 head/base sha가 없어
+  // pr-data-collector가 PR 번호로 직접 조회한다.
+  private handleIssueComment(payload: GithubWebhookPayload): void {
+    if (!this.shouldProcessIssueComment(payload)) return;
+
+    const ownerRepo = this.parseOwnerRepo(payload.repository.full_name);
+    if (!ownerRepo) return;
+    const [owner, repo] = ownerRepo;
+
+    const prNumber = payload.issue!.number;
+    const installationId = payload.installation!.id;
+    const commentId = payload.comment!.id;
+
+    this.prDataCollectorService
+      .collectByPrNumber(
+        installationId,
+        owner,
+        repo,
+        prNumber,
+        payload.repository.id,
+      )
+      .then((result) => {
+        if (result === null) {
+          this.logger.warn(
+            `PR #${prNumber} 수집 스킵 (diff 크기 초과, /dovi review)`,
+          );
+          return;
+        }
+        // 같은 커밋에 명령이 반복돼도 매번 새 리뷰가 돌도록
+        // commentId를 섞어 별도 job으로 만든다 (idempotency 우회).
+        return this.reviewDispatcherService.dispatch(
+          { ...result, reviewJobId: `${result.reviewJobId}_c${commentId}` },
+          { owner, repo, prNumber, installationId },
+        );
+      })
+      .catch((err: unknown) => {
+        this.logger.error(`/dovi review 재실행 실패 (PR #${prNumber})`, err);
+      });
+  }
+
+  private shouldProcessIssueComment(payload: GithubWebhookPayload): boolean {
+    if (
+      payload.action !== 'created' ||
+      !payload.installation ||
+      !payload.issue?.pull_request ||
+      !payload.comment ||
+      // 루프 방지: 봇(GitHub App) 자신의 코멘트는 sender.type === 'Bot' 이라 자동 제외
+      payload.sender.type !== 'User'
+    ) {
+      return false;
+    }
+    return payload.comment.body.trim().toLowerCase() === REVIEW_COMMAND;
   }
 
   private shouldProcessPullRequest(payload: GithubWebhookPayload): boolean {

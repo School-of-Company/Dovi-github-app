@@ -99,6 +99,32 @@ export class PrDataCollectorService {
     };
   }
 
+  // /dovi review 같은 PR 대화창 명령은 웹훅 payload에 head/base sha가 없으므로
+  // PR 번호만으로 조회해 최신 sha 기준으로 collect()를 실행한다.
+  async collectByPrNumber(
+    installationId: number,
+    owner: string,
+    repo: string,
+    prNumber: number,
+    repositoryId: number,
+  ): Promise<ReviewRequestPayload | null> {
+    const octokit =
+      await this.installationTokenManager.getOctokit(installationId);
+    const { data: pr } = await withRetry(() =>
+      octokit.rest.pulls.get({ owner, repo, pull_number: prNumber }),
+    );
+
+    return this.collect({
+      installationId,
+      owner,
+      repo,
+      prNumber,
+      headSha: pr.head.sha,
+      baseSha: pr.base.sha,
+      repositoryId,
+    });
+  }
+
   private async fetchDiff(
     octokit: Octokit,
     owner: string,
