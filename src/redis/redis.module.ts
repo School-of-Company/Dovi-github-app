@@ -3,6 +3,7 @@ import Redis from 'ioredis';
 import { IdempotencyStore } from './idempotency.store';
 import { JobStateStore } from './job-state.store';
 import { ReviewJobContextStore } from './review-job-context.store';
+import { CommentAnswerContextStore } from './comment-answer-context.store';
 import { REDIS_CLIENT } from './redis.constants';
 
 @Global()
@@ -15,12 +16,14 @@ import { REDIS_CLIENT } from './redis.constants';
     IdempotencyStore,
     JobStateStore,
     ReviewJobContextStore,
+    CommentAnswerContextStore,
   ],
   exports: [
     REDIS_CLIENT,
     IdempotencyStore,
     JobStateStore,
     ReviewJobContextStore,
+    CommentAnswerContextStore,
   ],
 })
 export class RedisModule {}

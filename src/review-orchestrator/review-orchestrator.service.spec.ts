@@ -11,6 +11,8 @@ function makeHttpError(status: number): Error & { status: number } {
 
 describe('ReviewOrchestratorService', () => {
   let createReview: jest.Mock;
+  let paginate: jest.Mock;
+  let deleteReviewComment: jest.Mock;
   let installationTokenManager: { getOctokit: jest.Mock };
   let reviewJobContextStore: { get: jest.Mock };
   let dicoshot: { sendCustom: jest.Mock };
@@ -41,11 +43,21 @@ describe('ReviewOrchestratorService', () => {
   };
 
   beforeEach(() => {
+    delete process.env.GITHUB_BOT_LOGIN;
     createReview = jest.fn();
+    paginate = jest.fn().mockResolvedValue([]);
+    deleteReviewComment = jest.fn().mockResolvedValue(undefined);
     installationTokenManager = {
-      getOctokit: jest
-        .fn()
-        .mockResolvedValue({ rest: { pulls: { createReview } } }),
+      getOctokit: jest.fn().mockResolvedValue({
+        rest: {
+          pulls: {
+            createReview,
+            listReviewComments: 'listReviewComments',
+            deleteReviewComment,
+          },
+        },
+        paginate,
+      }),
     };
     reviewJobContextStore = { get: jest.fn().mockResolvedValue(context) };
     dicoshot = { sendCustom: jest.fn() };
@@ -134,7 +146,7 @@ describe('ReviewOrchestratorService', () => {
     expect(createReview).toHaveBeenCalled();
   });
 
-  it('critical + suggestedFix가 있는 finding은 suggestion 블록으로, 나머지는 일반 텍스트로 포맷한다', async () => {
+  it('severity와 무관하게 suggestedFix는 항상 평문 "제안:" 텍스트로 포맷한다', async () => {
     const payload: ReviewCompletedPayload = {
       ...completedPayload,
       reviews: [
@@ -166,7 +178,8 @@ describe('ReviewOrchestratorService', () => {
     const [{ comments }] = createReview.mock.calls[0] as [
       { comments: { body: string }[] },
     ];
-    expect(comments[0].body).toContain('```suggestion\nconst x = 1;\n```');
+    expect(comments[0].body).not.toContain('```suggestion');
+    expect(comments[0].body).toContain('제안: const x = 1;');
     expect(comments[1].body).not.toContain('```suggestion');
     expect(comments[1].body).toContain('제안: const y = 2;');
   });
@@ -188,5 +201,41 @@ describe('ReviewOrchestratorService', () => {
     expect(dicoshot.sendCustom).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'GitHub 리뷰 등록 실패' }),
     );
+  });
+
+  it('GITHUB_BOT_LOGIN이 없으면 이전 코멘트 조회 없이 바로 createReview를 호출한다', async () => {
+    await service.handle(completedPayload);
+
+    expect(paginate).not.toHaveBeenCalled();
+    expect(createReview).toHaveBeenCalled();
+  });
+
+  it('봇이 남긴 이전 최상위 코멘트만 삭제하고, 사람 답글/다른 유저 코멘트는 남긴다', async () => {
+    process.env.GITHUB_BOT_LOGIN = 'dovi-code-assist';
+    paginate.mockResolvedValue([
+      { id: 1, user: { login: 'dovi-code-assist[bot]' }, in_reply_to_id: null },
+      {
+        id: 2,
+        user: { login: 'dovi-code-assist[bot]' },
+        in_reply_to_id: 999,
+      },
+      { id: 3, user: { login: 'someone-else' }, in_reply_to_id: null },
+    ]);
+
+    await service.handle(completedPayload);
+
+    expect(deleteReviewComment).toHaveBeenCalledTimes(1);
+    expect(deleteReviewComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 1 }),
+    );
+    expect(createReview).toHaveBeenCalled();
+  });
+
+  it('이전 코멘트 정리 중 에러가 나도 새 리뷰 등록은 계속 진행한다', async () => {
+    process.env.GITHUB_BOT_LOGIN = 'dovi-code-assist';
+    paginate.mockRejectedValue(new Error('list failed'));
+
+    await expect(service.handle(completedPayload)).resolves.toBeUndefined();
+    expect(createReview).toHaveBeenCalled();
   });
 });
