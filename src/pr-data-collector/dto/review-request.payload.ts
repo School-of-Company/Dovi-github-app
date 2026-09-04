@@ -4,6 +4,9 @@ export interface ChangedFile {
   filePath: string;
   status: ChangedFileStatus;
   patch?: string;
+  // ai-server가 tree-sitter로 변경된 함수/클래스 전체를 리뷰 컨텍스트에 포함시키는
+  // AST 기능(app/review/chunking.py)에 쓰인다. 없으면 hunk만으로 리뷰가 진행된다.
+  content?: string;
 }
 
 // 멘션 답글로 재리뷰가 트리거된 경우에만 채워진다.
