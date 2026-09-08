@@ -100,6 +100,40 @@ Kafka 메시지 key는 `reviewJobId`(문자열)를 그대로 사용한다.
 
 `repositoryId`, `prNumber`는 ai-server가 보내지 않으므로 포함하지 않는다.
 
+### `repo.index.requested`
+
+github-app → ai-server. Index Branch(DOVI.md `## Index Branch`, 없으면 `repository.default_branch`)로 push될 때만 발행한다. 최초 전체 인덱싱은 대상이 아니며 (`before`가 전부 0인 신규 브랜치 push는 스킵), 증분(diff) 업데이트만 다룬다.
+
+| 필드           | 타입   | 비고                                         |
+| -------------- | ------ | -------------------------------------------- |
+| `repositoryId` | number |                                              |
+| `branch`       | string | Index Branch                                 |
+| `headSha`      | string | push의 `after`                               |
+| `changedFiles` | array  | 아래 참고. `pr.review.requested`와 별개 구조 |
+
+`changedFiles[]`:
+
+| 필드       | 타입                                              | 비고                                                                                                    |
+| ---------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `filePath` | string                                            |                                                                                                         |
+| `status`   | `'added' \| 'modified' \| 'removed' \| 'renamed'` |                                                                                                         |
+| `content`  | string?                                           | `after` 기준 원문. `removed`, secret 경로, 200KB 초과 시 생략. 총합 512KB 예산 초과 시 큰 파일부터 생략 |
+
+메시지 key: `{repositoryId}:{branch}:{headSha}`.
+
+### `pr.comment.reflected`
+
+github-app → ai-server. 봇 리뷰 코멘트 스레드에 달린 답글을 텍스트 휴리스틱(`ReviewFeedbackDispatcherService`/`classifyReflection`)으로 분석해, 반영/미반영으로 읽히면 발행한다. 애매하면 발행하지 않는다.
+
+| 필드           | 타입    | 비고                                                       |
+| -------------- | ------- | ---------------------------------------------------------- |
+| `reviewJobId`  | string  | 원본 `pr.review.completed`의 reviewJobId와 동일            |
+| `findingIndex` | number  | 원본 `pr.review.completed`의 `reviews` 배열 내 인덱스      |
+| `reflected`    | boolean |                                                            |
+| `reason`       | string? | `reflected: false`일 때만 채움 (답글 원문, 200자 truncate) |
+
+메시지 key: `reviewJobId`. `findingIndex`는 리뷰 등록 시 `ReviewCommentFindingStore`(Redis, TTL 1시간)에 GitHub 코멘트 id → `{reviewJobId, findingIndex}`로 저장해두었다가, 그 코멘트에 답글이 달렸을 때 역조회한다.
+
 ## 요약 원칙
 
 1. 토픽 이름: `도메인.대상.이벤트` (dot-separated).

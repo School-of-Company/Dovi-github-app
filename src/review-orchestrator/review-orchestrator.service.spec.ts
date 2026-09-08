@@ -2,6 +2,7 @@ import type { DicoshotService } from 'dicoshot-nest';
 import { ReviewOrchestratorService } from './review-orchestrator.service';
 import type { ReviewJobContextStore } from '../redis/review-job-context.store';
 import type { ReviewJobContext } from '../redis/review-job-context.type';
+import type { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
 
@@ -15,6 +16,7 @@ describe('ReviewOrchestratorService', () => {
   let deleteReviewComment: jest.Mock;
   let installationTokenManager: { getOctokit: jest.Mock };
   let reviewJobContextStore: { get: jest.Mock };
+  let reviewCommentFindingStore: { set: jest.Mock };
   let dicoshot: { sendCustom: jest.Mock };
   let service: ReviewOrchestratorService;
 
@@ -44,7 +46,7 @@ describe('ReviewOrchestratorService', () => {
 
   beforeEach(() => {
     delete process.env.GITHUB_BOT_LOGIN;
-    createReview = jest.fn();
+    createReview = jest.fn().mockResolvedValue({ data: { id: 555 } });
     paginate = jest.fn().mockResolvedValue([]);
     deleteReviewComment = jest.fn().mockResolvedValue(undefined);
     installationTokenManager = {
@@ -53,6 +55,7 @@ describe('ReviewOrchestratorService', () => {
           pulls: {
             createReview,
             listReviewComments: 'listReviewComments',
+            listCommentsForReview: 'listCommentsForReview',
             deleteReviewComment,
           },
         },
@@ -60,11 +63,13 @@ describe('ReviewOrchestratorService', () => {
       }),
     };
     reviewJobContextStore = { get: jest.fn().mockResolvedValue(context) };
+    reviewCommentFindingStore = { set: jest.fn().mockResolvedValue(undefined) };
     dicoshot = { sendCustom: jest.fn() };
 
     service = new ReviewOrchestratorService(
       installationTokenManager,
       reviewJobContextStore as unknown as ReviewJobContextStore,
+      reviewCommentFindingStore as unknown as ReviewCommentFindingStore,
       dicoshot as unknown as DicoshotService,
     );
   });
@@ -201,6 +206,73 @@ describe('ReviewOrchestratorService', () => {
     expect(dicoshot.sendCustom).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'GitHub 리뷰 등록 실패' }),
     );
+  });
+
+  it('finding이 있으면 생성된 리뷰 코멘트 id를 findingIndex와 함께 저장한다', async () => {
+    const payload: ReviewCompletedPayload = {
+      ...completedPayload,
+      reviews: [
+        {
+          severity: 'minor',
+          confidence: 0.5,
+          filePath: 'a.ts',
+          line: 1,
+          title: 'a',
+          message: 'msg-a',
+          evidence: [],
+        },
+        {
+          severity: 'major',
+          confidence: 0.8,
+          filePath: 'b.ts',
+          line: 2,
+          title: 'b',
+          message: 'msg-b',
+          evidence: [],
+        },
+      ],
+    };
+    // listCommentsForReview는 별도 paginate 호출 — createReview에 보낸 순서와
+    // 동일한 순서로 생성된 코멘트가 반환된다고 가정한다.
+    paginate.mockResolvedValue([{ id: 111 }, { id: 222 }]);
+
+    await service.handle(payload);
+
+    expect(reviewCommentFindingStore.set).toHaveBeenCalledWith(111, {
+      reviewJobId: payload.reviewJobId,
+      findingIndex: 0,
+    });
+    expect(reviewCommentFindingStore.set).toHaveBeenCalledWith(222, {
+      reviewJobId: payload.reviewJobId,
+      findingIndex: 1,
+    });
+  });
+
+  it('finding이 없으면 코멘트 매핑 조회를 하지 않는다', async () => {
+    await service.handle(completedPayload);
+
+    expect(paginate).not.toHaveBeenCalled();
+    expect(reviewCommentFindingStore.set).not.toHaveBeenCalled();
+  });
+
+  it('매핑 저장 조회가 실패해도 리뷰 등록 자체는 성공으로 끝난다', async () => {
+    const payload: ReviewCompletedPayload = {
+      ...completedPayload,
+      reviews: [
+        {
+          severity: 'minor',
+          confidence: 0.5,
+          filePath: 'a.ts',
+          line: 1,
+          title: 'a',
+          message: 'msg-a',
+          evidence: [],
+        },
+      ],
+    };
+    paginate.mockRejectedValue(new Error('list failed'));
+
+    await expect(service.handle(payload)).resolves.toBeUndefined();
   });
 
   it('GITHUB_BOT_LOGIN이 없으면 이전 코멘트 조회 없이 바로 createReview를 호출한다', async () => {

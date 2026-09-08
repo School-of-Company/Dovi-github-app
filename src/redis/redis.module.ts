@@ -4,6 +4,7 @@ import { IdempotencyStore } from './idempotency.store';
 import { JobStateStore } from './job-state.store';
 import { ReviewJobContextStore } from './review-job-context.store';
 import { CommentAnswerContextStore } from './comment-answer-context.store';
+import { ReviewCommentFindingStore } from './review-comment-finding.store';
 import { REDIS_CLIENT } from './redis.constants';
 
 @Global()
@@ -17,6 +18,7 @@ import { REDIS_CLIENT } from './redis.constants';
     JobStateStore,
     ReviewJobContextStore,
     CommentAnswerContextStore,
+    ReviewCommentFindingStore,
   ],
   exports: [
     REDIS_CLIENT,
@@ -24,6 +26,7 @@ import { REDIS_CLIENT } from './redis.constants';
     JobStateStore,
     ReviewJobContextStore,
     CommentAnswerContextStore,
+    ReviewCommentFindingStore,
   ],
 })
 export class RedisModule {}

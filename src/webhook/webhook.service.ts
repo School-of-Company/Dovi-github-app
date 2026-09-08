@@ -3,12 +3,19 @@ import { PrDataCollectorService } from '../pr-data-collector/pr-data-collector.s
 import { ReviewDispatcherService } from '../review-dispatcher/review-dispatcher.service';
 import { CommentAnswerCollectorService } from '../comment-answer/comment-answer-collector.service';
 import { CommentAnswerDispatcherService } from '../comment-answer/comment-answer-dispatcher.service';
+import { RepoIndexCollectorService } from '../repo-index/repo-index-collector.service';
+import { RepoIndexDispatcherService } from '../repo-index/repo-index-dispatcher.service';
+import { ReviewFeedbackDispatcherService } from '../review-feedback/review-feedback-dispatcher.service';
+import { classifyReflection } from '../review-feedback/reflection-classifier';
+import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import type { GithubWebhookPayload } from './dto/github-webhook-payload';
 import type { ReplyContext } from '../pr-data-collector/dto/review-request.payload';
 import type { CommentAnswerRequestPayload } from '../comment-answer/dto/comment-answer-request.payload';
 
 const ALLOWED_PR_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
 const REVIEW_COMMAND = '/dovi review';
+// branch/tag가 삭제된 push 이벤트는 after가 이 값으로 온다.
+const EMPTY_SHA = '0'.repeat(40);
 
 @Injectable()
 export class WebhookService {
@@ -19,6 +26,10 @@ export class WebhookService {
     private readonly reviewDispatcherService: ReviewDispatcherService,
     private readonly commentAnswerCollectorService: CommentAnswerCollectorService,
     private readonly commentAnswerDispatcherService: CommentAnswerDispatcherService,
+    private readonly repoIndexCollectorService: RepoIndexCollectorService,
+    private readonly repoIndexDispatcherService: RepoIndexDispatcherService,
+    private readonly reviewFeedbackDispatcherService: ReviewFeedbackDispatcherService,
+    private readonly reviewCommentFindingStore: ReviewCommentFindingStore,
   ) {}
 
   handle(event: string, payload: GithubWebhookPayload): void {
@@ -32,6 +43,10 @@ export class WebhookService {
     }
     if (event === 'issue_comment') {
       this.handleIssueComment(payload);
+      return;
+    }
+    if (event === 'push') {
+      this.handlePush(payload);
       return;
     }
   }
@@ -79,6 +94,9 @@ export class WebhookService {
   // (1) 리뷰 스레드 답글(in_reply_to_id 있음) → 해당 스레드만 읽는 가벼운 Q&A 플로우
   // (2) 그 외 최상위 코멘트 멘션 → 기존처럼 전체 리뷰 파이프라인 재실행
   private handleReviewComment(payload: GithubWebhookPayload): void {
+    // 반영 여부 감지는 봇 멘션과 무관하게 항상 시도한다 (Q&A/재리뷰와는 별개 신호).
+    this.detectReviewFeedback(payload);
+
     if (!this.shouldProcessReviewComment(payload)) return;
 
     const ownerRepo = this.parseOwnerRepo(payload.repository.full_name);
@@ -186,6 +204,48 @@ export class WebhookService {
       });
   }
 
+  // 리뷰 코멘트 스레드에 달린 답글(봇 멘션 여부 무관)을 텍스트 휴리스틱으로
+  // 분석해 "반영했다/안 했다"로 읽히면 pr.comment.reflected를 발행한다.
+  // 원본 코멘트가 우리 봇이 남긴 리뷰 코멘트인 경우만 대상이며(Redis 매핑 존재),
+  // 애매한 텍스트는 조용히 무시한다(false positive 방지가 신호 누락보다 중요).
+  private detectReviewFeedback(payload: GithubWebhookPayload): void {
+    const comment = payload.comment;
+    if (
+      payload.action !== 'created' ||
+      !comment ||
+      !comment.in_reply_to_id ||
+      // 루프 방지: 봇 자신의 답글은 sender.type === 'Bot'
+      payload.sender.type !== 'User'
+    ) {
+      return;
+    }
+
+    const classification = classifyReflection(comment.body);
+    if (!classification) return;
+
+    const rootCommentId = comment.in_reply_to_id;
+    this.reviewCommentFindingStore
+      .get(rootCommentId)
+      .then((finding) => {
+        if (!finding) return;
+        return this.reviewFeedbackDispatcherService.dispatch(
+          {
+            reviewJobId: finding.reviewJobId,
+            findingIndex: finding.findingIndex,
+            reflected: classification.reflected,
+            reason: classification.reason,
+          },
+          comment.id,
+        );
+      })
+      .catch((err: unknown) => {
+        this.logger.error(
+          `리뷰 반영 여부 신호 처리 실패 (comment #${comment.id})`,
+          err,
+        );
+      });
+  }
+
   // PR 대화창에 "/dovi review"만 남기면(리뷰 코멘트가 아닌 일반 코멘트) 전체
   // 리뷰 파이프라인을 재실행한다. webhook payload에 head/base sha가 없어
   // pr-data-collector가 PR 번호로 직접 조회한다.
@@ -239,6 +299,62 @@ export class WebhookService {
       return false;
     }
     return payload.comment.body.trim().toLowerCase() === REVIEW_COMMAND;
+  }
+
+  // Index Branch(DOVI.md에 명시, 없으면 default_branch)로 push될 때만 반응해
+  // repo.index.requested를 발행한다 (RAG용 증분 인덱싱 트리거).
+  private handlePush(payload: GithubWebhookPayload): void {
+    if (
+      !payload.installation ||
+      !payload.ref ||
+      !payload.before ||
+      !payload.after ||
+      payload.after === EMPTY_SHA
+    ) {
+      return;
+    }
+
+    const ownerRepo = this.parseOwnerRepo(payload.repository.full_name);
+    if (!ownerRepo) return;
+    const [owner, repo] = ownerRepo;
+
+    const installationId = payload.installation.id;
+    const pushedBranch = payload.ref.replace(/^refs\/heads\//, '');
+    const before = payload.before;
+    const after = payload.after;
+    const repositoryId = payload.repository.id;
+
+    this.repoIndexCollectorService
+      .resolveIndexBranch(
+        installationId,
+        owner,
+        repo,
+        payload.repository.default_branch,
+      )
+      .then((indexBranch) => {
+        if (pushedBranch !== indexBranch) return;
+
+        return this.repoIndexCollectorService
+          .collect(
+            installationId,
+            owner,
+            repo,
+            repositoryId,
+            pushedBranch,
+            before,
+            after,
+          )
+          .then((result) => {
+            if (result === null) return;
+            return this.repoIndexDispatcherService.dispatch(result);
+          });
+      })
+      .catch((err: unknown) => {
+        this.logger.error(
+          `repo 인덱싱 트리거 실패: ${owner}/${repo}@${pushedBranch}`,
+          err,
+        );
+      });
   }
 
   private shouldProcessPullRequest(payload: GithubWebhookPayload): boolean {

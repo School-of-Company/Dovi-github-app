@@ -2,25 +2,30 @@ import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 
 type Finding = ReviewCompletedPayload['reviews'][number];
 
+// findingIndex는 원본 payload.reviews 배열 내 인덱스를 그대로 보존한다 —
+// review-orchestrator가 생성된 GitHub 코멘트 id를 이 인덱스로 역매핑해 저장한다
+// (리뷰 반영 여부 이벤트의 findingIndex로 쓰기 위함). GitHub API로는 전송하지 않는다.
 export function buildReviewComments(
   reviews: ReviewCompletedPayload['reviews'],
-): { path: string; line: number; body: string }[] {
+): { path: string; line: number; body: string; findingIndex: number }[] {
   if (!Array.isArray(reviews)) {
     return [];
   }
   return reviews
+    .map((review, findingIndex) => ({ review, findingIndex }))
     .filter(
-      (review) =>
+      ({ review }) =>
         review &&
         typeof review.filePath === 'string' &&
         review.filePath.trim() !== '' &&
         typeof review.line === 'number' &&
         review.line > 0,
     )
-    .map((review) => ({
+    .map(({ review, findingIndex }) => ({
       path: review.filePath,
       line: review.line,
       body: formatCommentBody(review),
+      findingIndex,
     }));
 }
 

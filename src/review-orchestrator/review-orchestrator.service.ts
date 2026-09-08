@@ -8,6 +8,7 @@ import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-t
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
 import { ReviewJobContextStore } from '../redis/review-job-context.store';
 import type { ReviewJobContext } from '../redis/review-job-context.type';
+import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import { buildReviewComments } from './review-comment.formatter';
 import type { ReviewOrchestrator } from './review-orchestrator.interface';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
@@ -21,6 +22,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     @Inject(INSTALLATION_TOKEN_MANAGER)
     private readonly installationTokenManager: InstallationTokenManager,
     private readonly reviewJobContextStore: ReviewJobContextStore,
+    private readonly reviewCommentFindingStore: ReviewCommentFindingStore,
     private readonly dicoshot: DicoshotService,
   ) {}
 
@@ -47,15 +49,28 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     try {
       await this.deleteStaleReviewComments(octokit, context, payload.prNumber);
 
-      await octokit.rest.pulls.createReview({
+      const formattedComments = buildReviewComments(payload.reviews);
+      const { data: review } = await octokit.rest.pulls.createReview({
         owner: context.owner,
         repo: context.repo,
         pull_number: payload.prNumber,
         commit_id: payload.headSha,
         event: 'COMMENT',
         body: payload.summary,
-        comments: buildReviewComments(payload.reviews),
+        comments: formattedComments.map(({ path, line, body }) => ({
+          path,
+          line,
+          body,
+        })),
       });
+
+      await this.saveCommentFindingMapping(
+        octokit,
+        context,
+        payload,
+        review.id,
+        formattedComments,
+      );
     } catch (err) {
       await this.notifyOrchestratorError(payload, context, err);
 
@@ -68,6 +83,48 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       }
 
       throw err;
+    }
+  }
+
+  // 생성된 리뷰 코멘트의 GitHub id를 원본 finding 인덱스로 역매핑해 저장한다.
+  // 이후 이 코멘트 스레드에 반영/미반영 답글이 달렸을 때 어느 finding에 대한
+  // 것인지 알아내는 데 쓴다(pr.comment.reflected 발행용). listCommentsForReview는
+  // 요청한 comments 배열과 동일한 순서로 반환된다는 전제.
+  private async saveCommentFindingMapping(
+    octokit: Octokit,
+    context: ReviewJobContext,
+    payload: ReviewCompletedPayload,
+    reviewId: number,
+    formattedComments: { findingIndex: number }[],
+  ): Promise<void> {
+    if (formattedComments.length === 0) return;
+
+    try {
+      const createdComments = await withRetry(() =>
+        octokit.paginate(octokit.rest.pulls.listCommentsForReview, {
+          owner: context.owner,
+          repo: context.repo,
+          pull_number: payload.prNumber,
+          review_id: reviewId,
+          per_page: 100,
+        }),
+      );
+
+      await Promise.all(
+        createdComments.map((comment, i) => {
+          const findingIndex = formattedComments[i]?.findingIndex;
+          if (findingIndex === undefined) return Promise.resolve();
+          return this.reviewCommentFindingStore.set(comment.id, {
+            reviewJobId: payload.reviewJobId,
+            findingIndex,
+          });
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `리뷰 코멘트-finding 매핑 저장 실패 (반영 여부 추적 불가): PR #${payload.prNumber}`,
+        err,
+      );
     }
   }
 
