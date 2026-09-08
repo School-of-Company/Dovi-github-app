@@ -3,6 +3,10 @@ import type { PrDataCollectorService } from '../pr-data-collector/pr-data-collec
 import type { ReviewDispatcherService } from '../review-dispatcher/review-dispatcher.service';
 import type { CommentAnswerCollectorService } from '../comment-answer/comment-answer-collector.service';
 import type { CommentAnswerDispatcherService } from '../comment-answer/comment-answer-dispatcher.service';
+import type { RepoIndexCollectorService } from '../repo-index/repo-index-collector.service';
+import type { RepoIndexDispatcherService } from '../repo-index/repo-index-dispatcher.service';
+import type { ReviewFeedbackDispatcherService } from '../review-feedback/review-feedback-dispatcher.service';
+import type { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import type { GithubWebhookPayload } from './dto/github-webhook-payload';
 import type { ReviewRequestPayload } from '../pr-data-collector/dto/review-request.payload';
 import type { ThreadComment } from '../comment-answer/dto/comment-answer-request.payload';
@@ -37,6 +41,13 @@ describe('WebhookService', () => {
   let dispatcher: { dispatch: jest.Mock };
   let commentAnswerCollector: { collectThread: jest.Mock };
   let commentAnswerDispatcher: { dispatch: jest.Mock };
+  let repoIndexCollector: {
+    resolveIndexBranch: jest.Mock;
+    collect: jest.Mock;
+  };
+  let repoIndexDispatcher: { dispatch: jest.Mock };
+  let reviewFeedbackDispatcher: { dispatch: jest.Mock };
+  let reviewCommentFindingStore: { get: jest.Mock };
   let service: WebhookService;
 
   beforeEach(() => {
@@ -53,12 +64,25 @@ describe('WebhookService', () => {
     commentAnswerDispatcher = {
       dispatch: jest.fn().mockResolvedValue(undefined),
     };
+    repoIndexCollector = {
+      resolveIndexBranch: jest.fn().mockResolvedValue('develop'),
+      collect: jest.fn().mockResolvedValue(null),
+    };
+    repoIndexDispatcher = { dispatch: jest.fn().mockResolvedValue(undefined) };
+    reviewFeedbackDispatcher = {
+      dispatch: jest.fn().mockResolvedValue(undefined),
+    };
+    reviewCommentFindingStore = { get: jest.fn().mockResolvedValue(null) };
 
     service = new WebhookService(
       prDataCollector as unknown as PrDataCollectorService,
       dispatcher as unknown as ReviewDispatcherService,
       commentAnswerCollector as unknown as CommentAnswerCollectorService,
       commentAnswerDispatcher as unknown as CommentAnswerDispatcherService,
+      repoIndexCollector as unknown as RepoIndexCollectorService,
+      repoIndexDispatcher as unknown as RepoIndexDispatcherService,
+      reviewFeedbackDispatcher as unknown as ReviewFeedbackDispatcherService,
+      reviewCommentFindingStore as unknown as ReviewCommentFindingStore,
     );
   });
 
@@ -84,7 +108,7 @@ describe('WebhookService', () => {
         diff_hunk: '@@ -1 +1 @@',
         body: '@dovi-code-assist 반영했습니다',
       },
-      repository: { id: 1, full_name: 'owner/repo' },
+      repository: { id: 1, full_name: 'owner/repo', default_branch: 'main' },
       sender: { type: 'User', login: 'alice' },
       ...overrides,
     };
@@ -253,7 +277,7 @@ describe('WebhookService', () => {
         diff_hunk: '',
         body: '/dovi review',
       },
-      repository: { id: 1, full_name: 'owner/repo' },
+      repository: { id: 1, full_name: 'owner/repo', default_branch: 'main' },
       sender: { type: 'User', login: 'alice' },
       ...overrides,
     };
@@ -314,5 +338,197 @@ describe('WebhookService', () => {
     await flush();
 
     expect(prDataCollector.collectByPrNumber).not.toHaveBeenCalled();
+  });
+
+  function pushPayload(
+    overrides: Partial<GithubWebhookPayload> = {},
+  ): GithubWebhookPayload {
+    return {
+      action: '',
+      installation: { id: 10 },
+      ref: 'refs/heads/develop',
+      before: 'before-sha',
+      after: 'after-sha',
+      repository: {
+        id: 1,
+        full_name: 'owner/repo',
+        default_branch: 'main',
+      },
+      sender: { type: 'User', login: 'alice' },
+      ...overrides,
+    };
+  }
+
+  it('Index Branch(DOVI.md)로 push되면 repo.index.requested를 발행한다', async () => {
+    repoIndexCollector.resolveIndexBranch.mockResolvedValue('develop');
+    repoIndexCollector.collect.mockResolvedValue({
+      repositoryId: 1,
+      branch: 'develop',
+      headSha: 'after-sha',
+      changedFiles: [],
+    });
+
+    service.handle('push', pushPayload());
+    await flush();
+
+    expect(repoIndexCollector.resolveIndexBranch).toHaveBeenCalledWith(
+      10,
+      'owner',
+      'repo',
+      'main',
+    );
+    expect(repoIndexCollector.collect).toHaveBeenCalledWith(
+      10,
+      'owner',
+      'repo',
+      1,
+      'develop',
+      'before-sha',
+      'after-sha',
+    );
+    expect(repoIndexDispatcher.dispatch).toHaveBeenCalledWith({
+      repositoryId: 1,
+      branch: 'develop',
+      headSha: 'after-sha',
+      changedFiles: [],
+    });
+  });
+
+  it('Index Branch가 아닌 브랜치로의 push는 무시한다', async () => {
+    repoIndexCollector.resolveIndexBranch.mockResolvedValue('develop');
+
+    service.handle('push', pushPayload({ ref: 'refs/heads/feature/x' }));
+    await flush();
+
+    expect(repoIndexCollector.collect).not.toHaveBeenCalled();
+    expect(repoIndexDispatcher.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('브랜치 삭제 push(after가 전부 0)는 무시한다', async () => {
+    service.handle(
+      'push',
+      pushPayload({ after: '0000000000000000000000000000000000000000' }),
+    );
+    await flush();
+
+    expect(repoIndexCollector.resolveIndexBranch).not.toHaveBeenCalled();
+  });
+
+  it('collect가 null(신규 브랜치 등)을 반환하면 발행하지 않는다', async () => {
+    repoIndexCollector.resolveIndexBranch.mockResolvedValue('develop');
+    repoIndexCollector.collect.mockResolvedValue(null);
+
+    service.handle('push', pushPayload());
+    await flush();
+
+    expect(repoIndexDispatcher.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('봇 리뷰 코멘트 스레드 답글이 "반영했다"로 읽히면 pr.comment.reflected를 발행한다', async () => {
+    reviewCommentFindingStore.get.mockResolvedValue({
+      reviewJobId: '1:1:sha',
+      findingIndex: 2,
+    });
+
+    service.handle(
+      'pull_request_review_comment',
+      reviewCommentPayload({
+        comment: {
+          id: 555,
+          in_reply_to_id: 100,
+          path: 'src/foo.ts',
+          line: 12,
+          diff_hunk: '@@ -1 +1 @@',
+          body: '반영했습니다',
+        },
+      }),
+    );
+    await flush();
+
+    expect(reviewCommentFindingStore.get).toHaveBeenCalledWith(100);
+    expect(reviewFeedbackDispatcher.dispatch).toHaveBeenCalledWith(
+      { reviewJobId: '1:1:sha', findingIndex: 2, reflected: true },
+      555,
+    );
+  });
+
+  it('원본 코멘트가 우리 봇 리뷰가 아니면(매핑 없음) 발행하지 않는다', async () => {
+    reviewCommentFindingStore.get.mockResolvedValue(null);
+
+    service.handle(
+      'pull_request_review_comment',
+      reviewCommentPayload({
+        comment: {
+          id: 555,
+          in_reply_to_id: 100,
+          path: 'src/foo.ts',
+          line: 12,
+          diff_hunk: '@@ -1 +1 @@',
+          body: '반영했습니다',
+        },
+      }),
+    );
+    await flush();
+
+    expect(reviewFeedbackDispatcher.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('애매한 답글은 반영 여부 매핑 조회조차 하지 않는다', async () => {
+    service.handle(
+      'pull_request_review_comment',
+      reviewCommentPayload({
+        comment: {
+          id: 555,
+          in_reply_to_id: 100,
+          path: 'src/foo.ts',
+          line: 12,
+          diff_hunk: '@@ -1 +1 @@',
+          body: '네 확인했습니다',
+        },
+      }),
+    );
+    await flush();
+
+    expect(reviewCommentFindingStore.get).not.toHaveBeenCalled();
+    expect(reviewFeedbackDispatcher.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('봇 자신의 답글은 반영 여부 감지 대상에서 제외한다', async () => {
+    service.handle(
+      'pull_request_review_comment',
+      reviewCommentPayload({
+        comment: {
+          id: 555,
+          in_reply_to_id: 100,
+          path: 'src/foo.ts',
+          line: 12,
+          diff_hunk: '@@ -1 +1 @@',
+          body: '반영했습니다',
+        },
+        sender: { type: 'Bot', login: 'dovi-code-assist[bot]' },
+      }),
+    );
+    await flush();
+
+    expect(reviewCommentFindingStore.get).not.toHaveBeenCalled();
+  });
+
+  it('최상위 코멘트(답글 아님)는 반영 여부 감지 대상이 아니다', async () => {
+    service.handle(
+      'pull_request_review_comment',
+      reviewCommentPayload({
+        comment: {
+          id: 555,
+          in_reply_to_id: null,
+          path: 'src/foo.ts',
+          line: 12,
+          diff_hunk: '@@ -1 +1 @@',
+          body: '반영했습니다',
+        },
+      }),
+    );
+    await flush();
+
+    expect(reviewCommentFindingStore.get).not.toHaveBeenCalled();
   });
 });

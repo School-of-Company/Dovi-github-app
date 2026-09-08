@@ -1,5 +1,9 @@
 export interface GithubWebhookPayload {
   action: string;
+  // push 이벤트 전용 필드. push는 다른 이벤트와 달리 action이 없다.
+  ref?: string;
+  before?: string;
+  after?: string;
   installation?: {
     id: number;
   };
@@ -30,6 +34,7 @@ export interface GithubWebhookPayload {
   repository: {
     id: number;
     full_name: string;
+    default_branch: string;
   };
   sender: {
     type: string;

@@ -1,6 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { Octokit } from '@octokit/rest';
+import { enforceContentBudget } from '../common/content-budget';
+import { fetchFileContent } from '../common/github-content';
 import { withRetry } from '../common/retry';
+import { isSecretPath } from '../common/secret-path';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
 import type { CollectPrDataCommand } from './dto/collect-pr-data.command';
@@ -29,7 +32,6 @@ const CONTEXT_ROOT_CANDIDATES = [
 ];
 const CONTEXT_DOCS_PREFIX = 'docs/';
 const CONTEXT_FILE_SIZE_LIMIT = 200 * 1024;
-const SECRET_EXTENSIONS = ['.env', '.pem', '.p8', '.key'];
 
 // ai-server의 app/review/chunking.py::_EXTENSION_LANGUAGE와 동일한 목록.
 // AST 파싱을 지원하지 않는 확장자는 content를 보내봐야 ai-server가 버리므로
@@ -54,19 +56,6 @@ function hasAstSupportedExtension(path: string): boolean {
   const dot = path.lastIndexOf('.');
   if (dot === -1) return false;
   return AST_SUPPORTED_EXTENSIONS.has(path.slice(dot).toLowerCase());
-}
-
-// ai-server의 app/review/context.py::_is_secret과 동일한 규칙 (1차 방어)
-function isSecretPath(path: string): boolean {
-  const segments = path.toLowerCase().split('/');
-  if (segments.includes('secrets')) return true;
-
-  const name = segments[segments.length - 1];
-  if (SECRET_EXTENSIONS.some((ext) => name.endsWith(ext))) return true;
-  if (name === '.env' || name.startsWith('.env.')) return true;
-  if (name.includes('private-key') || name.includes('private_key')) return true;
-
-  return false;
 }
 
 @Injectable()
@@ -217,7 +206,7 @@ export class PrDataCollectorService {
         if (isSecretPath(file.filePath)) return;
 
         file.content =
-          (await this.fetchFileContent(
+          (await fetchFileContent(
             octokit,
             owner,
             repo,
@@ -228,41 +217,20 @@ export class PrDataCollectorService {
       }),
     );
 
-    this.enforceChangedFileContentBudget(changedFiles, prNumber);
-
-    return changedFiles;
-  }
-
-  // 예산을 넘으면 큰 파일부터 content를 비워 hunk 기반 리뷰로 fallback시킨다
-  // (ai-server는 content가 없으면 hunk만으로 리뷰를 진행한다).
-  private enforceChangedFileContentBudget(
-    files: ChangedFile[],
-    prNumber: number,
-  ): void {
-    const withContent = files.filter((file) => file.content !== undefined);
-    let total = withContent.reduce(
-      (sum, file) => sum + Buffer.byteLength(file.content!, 'utf-8'),
-      0,
+    // 예산을 넘으면 큰 파일부터 content를 비워 hunk 기반 리뷰로 fallback시킨다
+    // (ai-server는 content가 없으면 hunk만으로 리뷰를 진행한다).
+    const dropped = enforceContentBudget(
+      changedFiles,
+      CHANGED_FILE_CONTENT_TOTAL_BUDGET,
     );
-    if (total <= CHANGED_FILE_CONTENT_TOTAL_BUDGET) return;
-
-    const droppedFiles: string[] = [];
-    const sorted = [...withContent].sort(
-      (a, b) =>
-        Buffer.byteLength(b.content!, 'utf-8') -
-        Buffer.byteLength(a.content!, 'utf-8'),
-    );
-    for (const file of sorted) {
-      if (total <= CHANGED_FILE_CONTENT_TOTAL_BUDGET) break;
-      total -= Buffer.byteLength(file.content!, 'utf-8');
-      file.content = undefined;
-      droppedFiles.push(file.filePath);
+    if (dropped.length > 0) {
+      this.logger.warn(
+        `PR #${prNumber} changedFiles content 예산(${CHANGED_FILE_CONTENT_TOTAL_BUDGET} bytes) 초과, ` +
+          `${dropped.length}개 파일 content 제외 (hunk만 전송): ${dropped.join(', ')}`,
+      );
     }
 
-    this.logger.warn(
-      `PR #${prNumber} changedFiles content 예산(${CHANGED_FILE_CONTENT_TOTAL_BUDGET} bytes) 초과, ` +
-        `${droppedFiles.length}개 파일 content 제외 (hunk만 전송): ${droppedFiles.join(', ')}`,
-    );
+    return changedFiles;
   }
 
   private async fetchContextFiles(
@@ -329,7 +297,7 @@ export class PrDataCollectorService {
     headSha: string,
     path: string,
   ): Promise<ContextFile | null> {
-    const content = await this.fetchFileContent(
+    const content = await fetchFileContent(
       octokit,
       owner,
       repo,
@@ -340,36 +308,5 @@ export class PrDataCollectorService {
     if (content === null) return null;
 
     return { path, content, source: 'github' };
-  }
-
-  private async fetchFileContent(
-    octokit: Octokit,
-    owner: string,
-    repo: string,
-    ref: string,
-    path: string,
-    sizeLimit: number,
-  ): Promise<string | null> {
-    try {
-      const { data } = await octokit.rest.repos.getContent({
-        owner,
-        repo,
-        path,
-        ref,
-      });
-
-      if (
-        Array.isArray(data) ||
-        data.type !== 'file' ||
-        !data.content ||
-        data.size > sizeLimit
-      ) {
-        return null;
-      }
-
-      return Buffer.from(data.content, 'base64').toString('utf-8');
-    } catch {
-      return null;
-    }
   }
 }
