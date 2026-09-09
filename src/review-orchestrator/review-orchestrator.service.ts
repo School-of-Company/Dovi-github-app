@@ -9,7 +9,10 @@ import type { InstallationTokenManager } from '../installation-token/installatio
 import { ReviewJobContextStore } from '../redis/review-job-context.store';
 import type { ReviewJobContext } from '../redis/review-job-context.type';
 import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
-import { buildReviewComments } from './review-comment.formatter';
+import {
+  buildReviewComments,
+  formatReviewSummary,
+} from './review-comment.formatter';
 import type { ReviewOrchestrator } from './review-orchestrator.interface';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
@@ -56,7 +59,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         pull_number: payload.prNumber,
         commit_id: payload.headSha,
         event: 'COMMENT',
-        body: payload.summary,
+        body: formatReviewSummary(payload.summary),
         comments: formattedComments.map(({ path, line, body }) => ({
           path,
           line,
