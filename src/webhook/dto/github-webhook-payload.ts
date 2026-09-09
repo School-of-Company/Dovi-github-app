@@ -10,6 +10,8 @@ export interface GithubWebhookPayload {
   pull_request?: {
     number: number;
     draft: boolean;
+    title: string;
+    body: string | null;
     head: {
       sha: string;
     };
