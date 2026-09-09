@@ -304,6 +304,34 @@ describe('WebhookService', () => {
     );
   });
 
+  it('PR 대화창에서 봇을 멘션만 해도(명령어 아니어도) 전체 재리뷰를 실행한다', async () => {
+    service.handle(
+      'issue_comment',
+      issueCommentPayload({
+        comment: {
+          id: 999,
+          path: '',
+          line: null,
+          diff_hunk: '',
+          body: '@dovi-code-assist 다시 봐주세요',
+        },
+      }),
+    );
+    await flush();
+
+    expect(prDataCollector.collectByPrNumber).toHaveBeenCalledWith(
+      10,
+      'owner',
+      'repo',
+      1,
+      1,
+    );
+    expect(dispatcher.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewJobId: '1_1_sha_c999' }),
+      { owner: 'owner', repo: 'repo', prNumber: 1, installationId: 10 },
+    );
+  });
+
   it('일반 이슈(PR 아님)에 남긴 "/dovi review"는 무시한다', async () => {
     service.handle(
       'issue_comment',

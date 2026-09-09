@@ -250,9 +250,10 @@ export class WebhookService {
       });
   }
 
-  // PR 대화창에 "/dovi review"만 남기면(리뷰 코멘트가 아닌 일반 코멘트) 전체
-  // 리뷰 파이프라인을 재실행한다. webhook payload에 head/base sha가 없어
-  // pr-data-collector가 PR 번호로 직접 조회한다.
+  // PR 대화창(리뷰 코멘트가 아닌 일반 코멘트)에 "/dovi review" 명령을 남기거나
+  // 봇을 멘션(@dovi-code-assist)하면 전체 리뷰 파이프라인을 재실행한다 —
+  // Gemini Code Assist처럼 다시 태그하면 재리뷰하는 UX. webhook payload에
+  // head/base sha가 없어 pr-data-collector가 PR 번호로 직접 조회한다.
   private handleIssueComment(payload: GithubWebhookPayload): void {
     if (!this.shouldProcessIssueComment(payload)) return;
 
@@ -302,7 +303,10 @@ export class WebhookService {
     ) {
       return false;
     }
-    return payload.comment.body.trim().toLowerCase() === REVIEW_COMMAND;
+    const body = payload.comment.body;
+    return (
+      body.trim().toLowerCase() === REVIEW_COMMAND || this.mentionsBot(body)
+    );
   }
 
   // Index Branch(DOVI.md에 명시, 없으면 default_branch)로 push될 때만 반응해
