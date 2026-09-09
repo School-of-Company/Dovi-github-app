@@ -31,6 +31,8 @@ export interface ReviewRequestPayload {
   reviewJobId: string;
   repositoryId: number;
   prNumber: number;
+  prTitle: string;
+  prBody: string;
   headSha: string;
   baseSha: string;
   contextFiles: ContextFile[];

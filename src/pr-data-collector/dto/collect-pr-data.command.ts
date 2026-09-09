@@ -3,6 +3,8 @@ export interface CollectPrDataCommand {
   owner: string;
   repo: string;
   prNumber: number;
+  prTitle: string;
+  prBody: string;
   headSha: string;
   baseSha: string;
   repositoryId: number;

@@ -11,6 +11,8 @@ describe('ReviewDispatcherService', () => {
     reviewJobId: '1:1:sha',
     repositoryId: 1,
     prNumber: 1,
+    prTitle: 'PR 제목',
+    prBody: 'PR 본문',
     headSha: 'sha',
     baseSha: 'base-sha',
     contextFiles: [],
