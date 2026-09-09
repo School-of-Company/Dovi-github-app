@@ -40,15 +40,17 @@ Kafka 메시지 key는 `reviewJobId`(문자열)를 그대로 사용한다.
 
 ### `pr.review.requested`
 
-| 필드           | 타입   | 비고                        |
-| -------------- | ------ | --------------------------- |
-| `reviewJobId`  | string | 메시지 key와 동일           |
-| `repositoryId` | number | GitHub repository id (숫자) |
-| `prNumber`     | number |                             |
-| `headSha`      | string |                             |
-| `baseSha`      | string |                             |
-| `contextFiles` | array  | 아래 `ContextFile` 참고     |
-| `changedFiles` | array  | 아래 `ChangedFile` 참고     |
+| 필드           | 타입   | 비고                                                                                                                                                                                                                                          |
+| -------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reviewJobId`  | string | 메시지 key와 동일                                                                                                                                                                                                                             |
+| `repositoryId` | number | GitHub repository id (숫자)                                                                                                                                                                                                                   |
+| `prNumber`     | number |                                                                                                                                                                                                                                               |
+| `prTitle`      | string | PR 제목                                                                                                                                                                                                                                       |
+| `prBody`       | string | PR 본문. GitHub API 사양상 본문 없는 PR은 `null`일 수 있어 github-app이 빈 문자열로 대체해 전송한다. ai-server가 2000자로 자르고 `<pr_description>` 태그로 감싸 처리하므로 github-app 쪽은 별도 길이 제한/이스케이프 없이 원문 그대로 보낸다. |
+| `headSha`      | string |                                                                                                                                                                                                                                               |
+| `baseSha`      | string |                                                                                                                                                                                                                                               |
+| `contextFiles` | array  | 아래 `ContextFile` 참고                                                                                                                                                                                                                       |
+| `changedFiles` | array  | 아래 `ChangedFile` 참고                                                                                                                                                                                                                       |
 
 `ChangedFile`:
 

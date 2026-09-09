@@ -16,6 +16,8 @@ describe('WebhookService', () => {
     reviewJobId: '1_1_sha',
     repositoryId: 1,
     prNumber: 1,
+    prTitle: 'PR 제목',
+    prBody: 'PR 본문',
     headSha: 'sha',
     baseSha: 'base-sha',
     contextFiles: [],
@@ -97,6 +99,8 @@ describe('WebhookService', () => {
       pull_request: {
         number: 1,
         draft: false,
+        title: 'PR 제목',
+        body: 'PR 본문',
         head: { sha: 'sha' },
         base: { sha: 'base-sha' },
       },

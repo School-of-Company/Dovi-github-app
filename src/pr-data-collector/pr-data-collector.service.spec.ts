@@ -10,6 +10,8 @@ describe('PrDataCollectorService', () => {
     owner: 'owner',
     repo: 'repo',
     prNumber: 1,
+    prTitle: 'PR 제목',
+    prBody: 'PR 본문',
     headSha: 'head-sha',
     baseSha: 'base-sha',
     repositoryId: 42,
@@ -199,6 +201,45 @@ describe('PrDataCollectorService', () => {
       status: 'modified',
       patch: '@@ -1 +1 @@',
       content: undefined,
+    });
+  });
+
+  describe('collectByPrNumber', () => {
+    function mockPrMetadata(title: string, body: string | null): void {
+      pullsGet.mockImplementation(
+        (params: { mediaType?: { format: string } }) => {
+          if (params.mediaType?.format === 'diff') {
+            return Promise.resolve({ data: 'diff --git a/x b/x' });
+          }
+          return Promise.resolve({
+            data: {
+              title,
+              body,
+              head: { sha: 'head-sha' },
+              base: { sha: 'base-sha' },
+            },
+          });
+        },
+      );
+    }
+
+    it('PR 메타데이터의 title/body를 조회해 prTitle/prBody로 채운다', async () => {
+      mockChangedFiles([]);
+      mockPrMetadata('PR 제목', 'PR 본문');
+
+      const result = await service.collectByPrNumber(1, 'owner', 'repo', 1, 42);
+
+      expect(result?.prTitle).toBe('PR 제목');
+      expect(result?.prBody).toBe('PR 본문');
+    });
+
+    it('body가 null이면 빈 문자열로 대체한다', async () => {
+      mockChangedFiles([]);
+      mockPrMetadata('PR 제목', null);
+
+      const result = await service.collectByPrNumber(1, 'owner', 'repo', 1, 42);
+
+      expect(result?.prBody).toBe('');
     });
   });
 });
