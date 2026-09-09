@@ -125,6 +125,24 @@ describe('PrDataCollectorService', () => {
     expect(result?.changedFiles[0].content).toBeUndefined();
   });
 
+  it('.java 파일은 AST 지원 확장자로 취급해 content를 채운다', async () => {
+    mockChangedFiles([
+      {
+        filename: 'src/main/java/com/example/Foo.java',
+        status: 'modified',
+        patch: '@@ -1 +1 @@',
+      },
+    ]);
+    mockFileContent(
+      'src/main/java/com/example/Foo.java',
+      'public class Foo {}',
+    );
+
+    const result = await service.collect(command);
+
+    expect(result?.changedFiles[0].content).toBe('public class Foo {}');
+  });
+
   it('secret 경로는 content를 채우지 않는다', async () => {
     mockChangedFiles([
       {
