@@ -44,6 +44,7 @@ const AST_SUPPORTED_EXTENSIONS = new Set([
   '.cjs',
   '.ts',
   '.tsx',
+  '.java',
 ]);
 // ai-server의 AST context 기능(app/review/chunking.py)이 파싱할 원본 파일 크기 상한.
 const CHANGED_FILE_CONTENT_SIZE_LIMIT = 200 * 1024;
