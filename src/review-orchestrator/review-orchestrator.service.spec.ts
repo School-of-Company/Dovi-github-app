@@ -102,7 +102,7 @@ describe('ReviewOrchestratorService', () => {
         pull_number: 1,
         commit_id: 'sha',
         event: 'COMMENT',
-        body: 'ok',
+        body: '# Code Review\n\nok',
         comments: [],
       }),
     );

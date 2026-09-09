@@ -1,5 +1,14 @@
-import { buildReviewComments } from './review-comment.formatter';
+import {
+  buildReviewComments,
+  formatReviewSummary,
+} from './review-comment.formatter';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
+
+describe('formatReviewSummary', () => {
+  it('summary 앞에 고정 헤더를 붙인다', () => {
+    expect(formatReviewSummary('요약 내용')).toBe('# Code Review\n\n요약 내용');
+  });
+});
 
 describe('buildReviewComments', () => {
   const baseFinding: ReviewCompletedPayload['reviews'][number] = {
