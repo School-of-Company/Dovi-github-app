@@ -7,6 +7,7 @@ import type { RepoIndexCollectorService } from '../repo-index/repo-index-collect
 import type { RepoIndexDispatcherService } from '../repo-index/repo-index-dispatcher.service';
 import type { ReviewFeedbackDispatcherService } from '../review-feedback/review-feedback-dispatcher.service';
 import type { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
+import type { ReviewReactionService } from '../review-reaction/review-reaction.service';
 import type { GithubWebhookPayload } from './dto/github-webhook-payload';
 import type { ReviewRequestPayload } from '../pr-data-collector/dto/review-request.payload';
 import type { ThreadComment } from '../comment-answer/dto/comment-answer-request.payload';
@@ -50,6 +51,10 @@ describe('WebhookService', () => {
   let repoIndexDispatcher: { dispatch: jest.Mock };
   let reviewFeedbackDispatcher: { dispatch: jest.Mock };
   let reviewCommentFindingStore: { get: jest.Mock };
+  let reviewReactionService: {
+    notifyPrInProgress: jest.Mock;
+    notifyReviewCommentInProgress: jest.Mock;
+  };
   let service: WebhookService;
 
   beforeEach(() => {
@@ -75,6 +80,10 @@ describe('WebhookService', () => {
       dispatch: jest.fn().mockResolvedValue(undefined),
     };
     reviewCommentFindingStore = { get: jest.fn().mockResolvedValue(null) };
+    reviewReactionService = {
+      notifyPrInProgress: jest.fn(),
+      notifyReviewCommentInProgress: jest.fn(),
+    };
 
     service = new WebhookService(
       prDataCollector as unknown as PrDataCollectorService,
@@ -85,6 +94,7 @@ describe('WebhookService', () => {
       repoIndexDispatcher as unknown as RepoIndexDispatcherService,
       reviewFeedbackDispatcher as unknown as ReviewFeedbackDispatcherService,
       reviewCommentFindingStore as unknown as ReviewCommentFindingStore,
+      reviewReactionService as unknown as ReviewReactionService,
     );
   });
 
@@ -149,6 +159,9 @@ describe('WebhookService', () => {
     );
     expect(prDataCollector.collect).not.toHaveBeenCalled();
     expect(dispatcher.dispatch).not.toHaveBeenCalled();
+    expect(
+      reviewReactionService.notifyReviewCommentInProgress,
+    ).toHaveBeenCalledWith(10, 'owner', 'repo', 999);
   });
 
   it('최상위 코멘트에서의 멘션(답글 아님)은 기존 전체 재리뷰 파이프라인을 재실행한다', async () => {
@@ -190,6 +203,9 @@ describe('WebhookService', () => {
     );
     expect(commentAnswerCollector.collectThread).not.toHaveBeenCalled();
     expect(commentAnswerDispatcher.dispatch).not.toHaveBeenCalled();
+    expect(
+      reviewReactionService.notifyReviewCommentInProgress,
+    ).toHaveBeenCalledWith(10, 'owner', 'repo', 999);
   });
 
   it('봇 자신(Bot)의 답글은 무시한다 (루프 방지)', async () => {
@@ -265,6 +281,39 @@ describe('WebhookService', () => {
     expect(dispatcher.dispatch).not.toHaveBeenCalled();
     expect(commentAnswerCollector.collectThread).not.toHaveBeenCalled();
     expect(commentAnswerDispatcher.dispatch).not.toHaveBeenCalled();
+  });
+
+  function pullRequestPayload(
+    overrides: Partial<GithubWebhookPayload> = {},
+  ): GithubWebhookPayload {
+    return {
+      action: 'opened',
+      installation: { id: 10 },
+      pull_request: {
+        number: 1,
+        draft: false,
+        title: 'PR 제목',
+        body: 'PR 본문',
+        head: { sha: 'sha' },
+        base: { sha: 'base-sha' },
+      },
+      repository: { id: 1, full_name: 'owner/repo', default_branch: 'main' },
+      sender: { type: 'User', login: 'alice' },
+      ...overrides,
+    };
+  }
+
+  it('PR이 열리면(opened) 전체 리뷰 파이프라인을 실행하고 👀 리액션을 남긴다', async () => {
+    service.handle('pull_request', pullRequestPayload());
+    await flush();
+
+    expect(prDataCollector.collect).toHaveBeenCalled();
+    expect(reviewReactionService.notifyPrInProgress).toHaveBeenCalledWith(
+      10,
+      'owner',
+      'repo',
+      1,
+    );
   });
 
   function issueCommentPayload(
