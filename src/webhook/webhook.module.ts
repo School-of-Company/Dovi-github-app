@@ -7,6 +7,7 @@ import { ReviewDispatcherModule } from '../review-dispatcher/review-dispatcher.m
 import { CommentAnswerModule } from '../comment-answer/comment-answer.module';
 import { RepoIndexModule } from '../repo-index/repo-index.module';
 import { ReviewFeedbackModule } from '../review-feedback/review-feedback.module';
+import { ReviewReactionModule } from '../review-reaction/review-reaction.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { ReviewFeedbackModule } from '../review-feedback/review-feedback.module'
     CommentAnswerModule,
     RepoIndexModule,
     ReviewFeedbackModule,
+    ReviewReactionModule,
   ],
   controllers: [WebhookController],
   providers: [WebhookSignatureGuard, WebhookService],

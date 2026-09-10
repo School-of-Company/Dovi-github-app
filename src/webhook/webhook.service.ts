@@ -8,6 +8,7 @@ import { RepoIndexDispatcherService } from '../repo-index/repo-index-dispatcher.
 import { ReviewFeedbackDispatcherService } from '../review-feedback/review-feedback-dispatcher.service';
 import { classifyReflection } from '../review-feedback/reflection-classifier';
 import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
+import { ReviewReactionService } from '../review-reaction/review-reaction.service';
 import type { GithubWebhookPayload } from './dto/github-webhook-payload';
 import type { ReplyContext } from '../pr-data-collector/dto/review-request.payload';
 import type { CommentAnswerRequestPayload } from '../comment-answer/dto/comment-answer-request.payload';
@@ -30,6 +31,7 @@ export class WebhookService {
     private readonly repoIndexDispatcherService: RepoIndexDispatcherService,
     private readonly reviewFeedbackDispatcherService: ReviewFeedbackDispatcherService,
     private readonly reviewCommentFindingStore: ReviewCommentFindingStore,
+    private readonly reviewReactionService: ReviewReactionService,
   ) {}
 
   handle(event: string, payload: GithubWebhookPayload): void {
@@ -57,6 +59,13 @@ export class WebhookService {
     const ownerRepo = this.parseOwnerRepo(payload.repository.full_name);
     if (!ownerRepo) return;
     const [owner, repo] = ownerRepo;
+
+    this.reviewReactionService.notifyPrInProgress(
+      payload.installation!.id,
+      owner,
+      repo,
+      payload.pull_request!.number,
+    );
 
     this.prDataCollectorService
       .collect({
@@ -112,6 +121,13 @@ export class WebhookService {
       this.handleThreadReplyMention(payload, owner, repo, comment, pr);
       return;
     }
+
+    this.reviewReactionService.notifyReviewCommentInProgress(
+      payload.installation!.id,
+      owner,
+      repo,
+      comment.id,
+    );
 
     const replyContext: ReplyContext = {
       commentId: comment.id,
@@ -175,6 +191,13 @@ export class WebhookService {
   ): void {
     const rootCommentId = comment.in_reply_to_id!;
     const installationId = payload.installation!.id;
+
+    this.reviewReactionService.notifyReviewCommentInProgress(
+      installationId,
+      owner,
+      repo,
+      comment.id,
+    );
 
     this.commentAnswerCollectorService
       .collectThread(installationId, owner, repo, pr.number, rootCommentId)
