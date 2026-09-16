@@ -3,6 +3,7 @@ import { ReviewOrchestratorService } from './review-orchestrator.service';
 import type { ReviewJobContextStore } from '../redis/review-job-context.store';
 import type { ReviewJobContext } from '../redis/review-job-context.type';
 import type { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
+import type { PrimaryReviewStore } from '../redis/primary-review.store';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
 
@@ -12,11 +13,14 @@ function makeHttpError(status: number): Error & { status: number } {
 
 describe('ReviewOrchestratorService', () => {
   let createReview: jest.Mock;
+  let updateReview: jest.Mock;
+  let createReviewComment: jest.Mock;
   let paginate: jest.Mock;
   let deleteReviewComment: jest.Mock;
   let installationTokenManager: { getOctokit: jest.Mock };
   let reviewJobContextStore: { get: jest.Mock };
   let reviewCommentFindingStore: { set: jest.Mock };
+  let primaryReviewStore: { get: jest.Mock; set: jest.Mock };
   let dicoshot: { sendCustom: jest.Mock };
   let service: ReviewOrchestratorService;
 
@@ -47,6 +51,8 @@ describe('ReviewOrchestratorService', () => {
   beforeEach(() => {
     delete process.env.GITHUB_BOT_LOGIN;
     createReview = jest.fn().mockResolvedValue({ data: { id: 555 } });
+    updateReview = jest.fn().mockResolvedValue({ data: { id: 555 } });
+    createReviewComment = jest.fn().mockResolvedValue({ data: { id: 777 } });
     paginate = jest.fn().mockResolvedValue([]);
     deleteReviewComment = jest.fn().mockResolvedValue(undefined);
     installationTokenManager = {
@@ -54,6 +60,8 @@ describe('ReviewOrchestratorService', () => {
         rest: {
           pulls: {
             createReview,
+            updateReview,
+            createReviewComment,
             listReviewComments: 'listReviewComments',
             listCommentsForReview: 'listCommentsForReview',
             deleteReviewComment,
@@ -64,12 +72,17 @@ describe('ReviewOrchestratorService', () => {
     };
     reviewJobContextStore = { get: jest.fn().mockResolvedValue(context) };
     reviewCommentFindingStore = { set: jest.fn().mockResolvedValue(undefined) };
+    primaryReviewStore = {
+      get: jest.fn().mockResolvedValue(null),
+      set: jest.fn().mockResolvedValue(undefined),
+    };
     dicoshot = { sendCustom: jest.fn() };
 
     service = new ReviewOrchestratorService(
       installationTokenManager,
       reviewJobContextStore as unknown as ReviewJobContextStore,
       reviewCommentFindingStore as unknown as ReviewCommentFindingStore,
+      primaryReviewStore as unknown as PrimaryReviewStore,
       dicoshot as unknown as DicoshotService,
     );
   });
@@ -106,6 +119,7 @@ describe('ReviewOrchestratorService', () => {
         comments: [],
       }),
     );
+    expect(primaryReviewStore.set).toHaveBeenCalledWith(1, 1, 555);
   });
 
   it('filePath/line이 유효하지 않은 finding은 제외하고 나머지만 등록한다', async () => {
@@ -309,5 +323,92 @@ describe('ReviewOrchestratorService', () => {
 
     await expect(service.handle(completedPayload)).resolves.toBeUndefined();
     expect(createReview).toHaveBeenCalled();
+  });
+
+  describe('같은 PR에 이미 봇 리뷰가 있는 경우 (push 반복)', () => {
+    beforeEach(() => {
+      primaryReviewStore.get.mockResolvedValue(555);
+    });
+
+    it('새 리뷰(createReview)를 만들지 않고 기존 리뷰의 body만 갱신한다', async () => {
+      await service.handle(completedPayload);
+
+      expect(createReview).not.toHaveBeenCalled();
+      expect(updateReview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: 'owner',
+          repo: 'repo',
+          pull_number: 1,
+          review_id: 555,
+          body: '# Code Review\n\nok',
+        }),
+      );
+      expect(primaryReviewStore.set).not.toHaveBeenCalled();
+    });
+
+    it('finding은 createReviewComment로 개별 등록하고 반환된 id로 매핑을 저장한다', async () => {
+      createReviewComment
+        .mockResolvedValueOnce({ data: { id: 111 } })
+        .mockResolvedValueOnce({ data: { id: 222 } });
+      const payload: ReviewCompletedPayload = {
+        ...completedPayload,
+        reviews: [
+          {
+            severity: 'minor',
+            confidence: 0.5,
+            filePath: 'a.ts',
+            line: 1,
+            title: 'a',
+            message: 'msg-a',
+            evidence: [],
+          },
+          {
+            severity: 'major',
+            confidence: 0.8,
+            filePath: 'b.ts',
+            line: 2,
+            title: 'b',
+            message: 'msg-b',
+            evidence: [],
+          },
+        ],
+      };
+
+      await service.handle(payload);
+
+      expect(createReviewComment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pull_number: 1,
+          commit_id: 'sha',
+          path: 'a.ts',
+          line: 1,
+        }),
+      );
+      expect(createReviewComment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pull_number: 1,
+          commit_id: 'sha',
+          path: 'b.ts',
+          line: 2,
+        }),
+      );
+      expect(reviewCommentFindingStore.set).toHaveBeenCalledWith(111, {
+        reviewJobId: payload.reviewJobId,
+        findingIndex: 0,
+      });
+      expect(reviewCommentFindingStore.set).toHaveBeenCalledWith(222, {
+        reviewJobId: payload.reviewJobId,
+        findingIndex: 1,
+      });
+    });
+
+    it('updateReview가 4xx 에러를 던지면 Discord 알림 후 재throw하지 않고 종료한다', async () => {
+      updateReview.mockRejectedValue(makeHttpError(422));
+
+      await expect(service.handle(completedPayload)).resolves.toBeUndefined();
+      expect(dicoshot.sendCustom).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'GitHub 리뷰 등록 실패' }),
+      );
+    });
   });
 });

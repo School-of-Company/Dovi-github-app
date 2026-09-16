@@ -5,6 +5,7 @@ import { JobStateStore } from './job-state.store';
 import { ReviewJobContextStore } from './review-job-context.store';
 import { CommentAnswerContextStore } from './comment-answer-context.store';
 import { ReviewCommentFindingStore } from './review-comment-finding.store';
+import { PrimaryReviewStore } from './primary-review.store';
 import { REDIS_CLIENT } from './redis.constants';
 
 @Global()
@@ -19,6 +20,7 @@ import { REDIS_CLIENT } from './redis.constants';
     ReviewJobContextStore,
     CommentAnswerContextStore,
     ReviewCommentFindingStore,
+    PrimaryReviewStore,
   ],
   exports: [
     REDIS_CLIENT,
@@ -27,6 +29,7 @@ import { REDIS_CLIENT } from './redis.constants';
     ReviewJobContextStore,
     CommentAnswerContextStore,
     ReviewCommentFindingStore,
+    PrimaryReviewStore,
   ],
 })
 export class RedisModule {}
