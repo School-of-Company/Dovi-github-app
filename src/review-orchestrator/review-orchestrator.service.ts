@@ -146,15 +146,39 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     body: string,
     formattedComments: FormattedReviewComment[],
   ): Promise<void> {
-    await withRetry(() =>
-      octokit.rest.pulls.updateReview({
-        owner: context.owner,
-        repo: context.repo,
-        pull_number: payload.prNumber,
-        review_id: reviewId,
+    try {
+      await withRetry(() =>
+        octokit.rest.pulls.updateReview({
+          owner: context.owner,
+          repo: context.repo,
+          pull_number: payload.prNumber,
+          review_id: reviewId,
+          body,
+        }),
+      );
+    } catch (err) {
+      if (!this.isDeadReview(err)) throw err;
+
+      // 저장된 review id가 GitHub에서 삭제/dismiss된 경우(404/410) 계속 같은
+      // 오류를 반복하며 이 PR이 영영 리뷰를 못 받는 대신, 기록을 지우고 새 리뷰를
+      // 생성한다.
+      this.logger.warn(
+        `기존 리뷰(id=${reviewId})를 찾을 수 없어 새로 생성: PR #${payload.prNumber}`,
+        err,
+      );
+      await this.primaryReviewStore.delete(
+        payload.repositoryId,
+        payload.prNumber,
+      );
+      await this.createInitialReview(
+        octokit,
+        context,
+        payload,
         body,
-      }),
-    );
+        formattedComments,
+      );
+      return;
+    }
 
     await Promise.all(
       formattedComments.map(
@@ -225,6 +249,9 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
   // push(synchronize)마다 새 리뷰를 올리다 보면 이전 push에서 남긴 봇 코멘트가
   // 그대로 쌓이므로, 새 리뷰를 올리기 전 봇이 단 이전 최상위 코멘트를 정리한다.
   // 사람이 남긴 답글(in_reply_to_id 존재)은 대화 스레드이므로 건드리지 않는다.
+  // 답글은 루트 코멘트에 매달린 구조이므로, 봇이 남긴 루트라도 그 아래에 답글이
+  // 하나라도 달려 있으면(다른 코멘트의 in_reply_to_id가 이 id를 가리키면) 스레드
+  // 전체가 함께 삭제되지 않도록 대상에서 제외한다.
   private async deleteStaleReviewComments(
     octokit: Octokit,
     context: ReviewJobContext,
@@ -243,9 +270,17 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         }),
       );
 
+      const repliedToIds = new Set(
+        comments
+          .map((comment) => comment.in_reply_to_id)
+          .filter((id): id is number => id != null),
+      );
+
       const staleComments = comments.filter(
         (comment) =>
-          comment.user?.login === `${botLogin}[bot]` && !comment.in_reply_to_id,
+          comment.user?.login === `${botLogin}[bot]` &&
+          !comment.in_reply_to_id &&
+          !repliedToIds.has(comment.id),
       );
 
       await Promise.all(
@@ -265,6 +300,10 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         err,
       );
     }
+  }
+
+  private isDeadReview(err: unknown): boolean {
+    return isClientError(err) && (err.status === 404 || err.status === 410);
   }
 
   private async notifyFailure(

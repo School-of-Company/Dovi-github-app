@@ -1,5 +1,6 @@
 import { Logger, OnModuleDestroy } from '@nestjs/common';
 import type { Consumer, Kafka, KafkaMessage } from 'kafkajs';
+import { PoisonMessageError } from './poison-message.error';
 
 export abstract class BaseKafkaConsumer implements OnModuleDestroy {
   protected readonly logger = new Logger(this.constructor.name);
@@ -24,7 +25,16 @@ export abstract class BaseKafkaConsumer implements OnModuleDestroy {
     await this.consumer.run({
       autoCommit: false,
       eachMessage: async ({ topic, partition, message }) => {
-        await this.handleMessage(topic, message);
+        try {
+          await this.handleMessage(topic, message);
+        } catch (err) {
+          if (!(err instanceof PoisonMessageError)) throw err;
+          this.logger.warn(
+            `역직렬화/검증 불가 메시지, 커밋 후 스킵: topic=${topic} partition=${partition} offset=${message.offset}`,
+            err,
+          );
+        }
+
         await this.consumer.commitOffsets([
           {
             topic,

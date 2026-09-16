@@ -15,11 +15,10 @@ export class RepoIndexDispatcherService {
   async dispatch(payload: RepoIndexRequestPayload): Promise<void> {
     const jobId = this.jobId(payload);
 
-    if (await this.idempotencyStore.exists(jobId)) {
+    if (!(await this.idempotencyStore.acquire(jobId))) {
       this.logger.log(`이미 처리된 repo index job, 스킵: ${jobId}`);
       return;
     }
-    await this.idempotencyStore.markProcessed(jobId);
 
     try {
       await this.kafkaProducer.send(
@@ -28,6 +27,7 @@ export class RepoIndexDispatcherService {
         jobId,
       );
     } catch (err) {
+      await this.idempotencyStore.release(jobId);
       this.logger.error(`Kafka 발행 실패: ${jobId}`, err);
       throw err;
     }

@@ -25,6 +25,10 @@ describe('classifyReflection', () => {
     "won't fix",
     'wontfix - not a real issue',
     'not applicable here',
+    '아직 안 고쳤어요',
+    '못 고쳤습니다',
+    'not done yet',
+    'this is not resolved',
   ])('"%s" 는 reflected: false로 분류하고 reason에 원문을 담는다', (body) => {
     expect(classifyReflection(body)).toEqual({
       reflected: false,

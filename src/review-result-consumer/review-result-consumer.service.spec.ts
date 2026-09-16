@@ -1,5 +1,6 @@
 import type { Kafka } from 'kafkajs';
 import { ReviewResultConsumerService } from './review-result-consumer.service';
+import { PoisonMessageError } from '../kafka/poison-message.error';
 import type { IdempotencyStore } from '../redis/idempotency.store';
 import type { JobStateStore } from '../redis/job-state.store';
 import type { ReviewCompletedPayload } from '../review-orchestrator/dto/review-completed.payload';
@@ -92,5 +93,29 @@ describe('ReviewResultConsumerService', () => {
       'failed',
     );
     expect(idempotencyStore.markProcessed).not.toHaveBeenCalled();
+  });
+
+  it('깨진 JSON은 PoisonMessageError를 던진다 (오프셋 커밋 후 스킵되도록)', async () => {
+    const message = { value: Buffer.from('{not-json') };
+
+    await expect(
+      (service as unknown as ConsumerWithHandleMessage).handleMessage(
+        completedTopic,
+        message,
+      ),
+    ).rejects.toBeInstanceOf(PoisonMessageError);
+    expect(orchestrator.handle).not.toHaveBeenCalled();
+  });
+
+  it('reviewJobId가 없는 payload는 PoisonMessageError를 던진다', async () => {
+    const message = { value: Buffer.from(JSON.stringify({ foo: 'bar' })) };
+
+    await expect(
+      (service as unknown as ConsumerWithHandleMessage).handleMessage(
+        completedTopic,
+        message,
+      ),
+    ).rejects.toBeInstanceOf(PoisonMessageError);
+    expect(orchestrator.handle).not.toHaveBeenCalled();
   });
 });

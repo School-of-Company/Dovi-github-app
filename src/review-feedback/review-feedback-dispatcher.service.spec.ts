@@ -10,14 +10,14 @@ describe('ReviewFeedbackDispatcherService', () => {
     reflected: true,
   };
 
-  let idempotencyStore: { exists: jest.Mock; markProcessed: jest.Mock };
+  let idempotencyStore: { acquire: jest.Mock; release: jest.Mock };
   let kafkaProducer: { send: jest.Mock };
   let service: ReviewFeedbackDispatcherService;
 
   beforeEach(() => {
     process.env.KAFKA_REVIEW_FEEDBACK_TOPIC = 'pr.comment.reflected';
 
-    idempotencyStore = { exists: jest.fn(), markProcessed: jest.fn() };
+    idempotencyStore = { acquire: jest.fn(), release: jest.fn() };
     kafkaProducer = { send: jest.fn() };
 
     service = new ReviewFeedbackDispatcherService(
@@ -27,32 +27,32 @@ describe('ReviewFeedbackDispatcherService', () => {
   });
 
   it('같은 commentId로 이미 처리된 경우 발행하지 않는다', async () => {
-    idempotencyStore.exists.mockResolvedValue(true);
+    idempotencyStore.acquire.mockResolvedValue(false);
 
     await service.dispatch(payload, 999);
 
-    expect(idempotencyStore.markProcessed).not.toHaveBeenCalled();
     expect(kafkaProducer.send).not.toHaveBeenCalled();
   });
 
-  it('처리되지 않은 경우 idempotency를 기록하고 reviewJobId를 key로 발행한다', async () => {
-    idempotencyStore.exists.mockResolvedValue(false);
+  it('처리되지 않은 경우 idempotency를 점유하고 reviewJobId를 key로 발행한다', async () => {
+    idempotencyStore.acquire.mockResolvedValue(true);
 
     await service.dispatch(payload, 999);
 
-    expect(idempotencyStore.exists).toHaveBeenCalledWith('feedback:999');
-    expect(idempotencyStore.markProcessed).toHaveBeenCalledWith('feedback:999');
+    expect(idempotencyStore.acquire).toHaveBeenCalledWith('feedback:999');
     expect(kafkaProducer.send).toHaveBeenCalledWith(
       'pr.comment.reflected',
       payload,
       '1:1:sha',
     );
+    expect(idempotencyStore.release).not.toHaveBeenCalled();
   });
 
-  it('Kafka 발행이 실패하면 에러를 throw한다', async () => {
-    idempotencyStore.exists.mockResolvedValue(false);
+  it('Kafka 발행이 실패하면 idempotency 점유를 되돌리고 에러를 throw한다', async () => {
+    idempotencyStore.acquire.mockResolvedValue(true);
     kafkaProducer.send.mockRejectedValue(new Error('kafka down'));
 
     await expect(service.dispatch(payload, 999)).rejects.toThrow('kafka down');
+    expect(idempotencyStore.release).toHaveBeenCalledWith('feedback:999');
   });
 });

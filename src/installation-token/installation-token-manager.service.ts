@@ -7,7 +7,9 @@ import { withRetry } from '../common/retry';
 import { REDIS_CLIENT } from '../redis/redis.constants';
 import type { InstallationTokenManager } from './installation-token-manager.interface';
 
-const TOKEN_TTL_SECONDS = 50 * 60;
+// installation token은 GitHub에서 발급 후 1시간 뒤 만료된다. 실제 만료시각보다
+// 일찍 캐시를 비워야 하므로 안전 마진을 둔다.
+const TTL_SAFETY_MARGIN_SECONDS = 5 * 60;
 
 @Injectable()
 export class InstallationTokenManagerService implements InstallationTokenManager {
@@ -43,10 +45,16 @@ export class InstallationTokenManagerService implements InstallationTokenManager
       });
     }
 
-    const { token } = await withRetry(() =>
+    const { token, expiresAt } = await withRetry(() =>
       this.appAuth({ type: 'installation', installationId }),
     );
-    await this.redis.set(cacheKey, token, 'EX', TOKEN_TTL_SECONDS);
+
+    const ttlSeconds =
+      Math.floor((Date.parse(expiresAt) - Date.now()) / 1000) -
+      TTL_SAFETY_MARGIN_SECONDS;
+    if (ttlSeconds > 0) {
+      await this.redis.set(cacheKey, token, 'EX', ttlSeconds);
+    }
 
     return new Octokit({ auth: token, request: { fetch: createTimedFetch() } });
   }

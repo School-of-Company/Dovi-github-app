@@ -31,7 +31,7 @@ export function buildReviewComments(
         review &&
         typeof review.filePath === 'string' &&
         review.filePath.trim() !== '' &&
-        typeof review.line === 'number' &&
+        Number.isInteger(review.line) &&
         review.line > 0,
     )
     .map(({ review, findingIndex }) => ({

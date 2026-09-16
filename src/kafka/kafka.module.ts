@@ -17,7 +17,10 @@ import { KAFKA_CLIENT } from './kafka.constants';
         }
         return new Kafka({
           clientId: 'dovi-github-app',
-          brokers: brokers.split(','),
+          brokers: brokers
+            .split(',')
+            .map((broker) => broker.trim())
+            .filter(Boolean),
         });
       },
     },
