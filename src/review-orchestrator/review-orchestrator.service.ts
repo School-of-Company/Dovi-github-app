@@ -9,10 +9,12 @@ import type { InstallationTokenManager } from '../installation-token/installatio
 import { ReviewJobContextStore } from '../redis/review-job-context.store';
 import type { ReviewJobContext } from '../redis/review-job-context.type';
 import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
+import { PrimaryReviewStore } from '../redis/primary-review.store';
 import {
   buildReviewComments,
   formatReviewSummary,
 } from './review-comment.formatter';
+import type { FormattedReviewComment } from './review-comment.formatter';
 import type { ReviewOrchestrator } from './review-orchestrator.interface';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
@@ -26,6 +28,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     private readonly installationTokenManager: InstallationTokenManager,
     private readonly reviewJobContextStore: ReviewJobContextStore,
     private readonly reviewCommentFindingStore: ReviewCommentFindingStore,
+    private readonly primaryReviewStore: PrimaryReviewStore,
     private readonly dicoshot: DicoshotService,
   ) {}
 
@@ -53,27 +56,30 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       await this.deleteStaleReviewComments(octokit, context, payload.prNumber);
 
       const formattedComments = buildReviewComments(payload.reviews);
-      const { data: review } = await octokit.rest.pulls.createReview({
-        owner: context.owner,
-        repo: context.repo,
-        pull_number: payload.prNumber,
-        commit_id: payload.headSha,
-        event: 'COMMENT',
-        body: formatReviewSummary(payload.summary),
-        comments: formattedComments.map(({ path, line, body }) => ({
-          path,
-          line,
-          body,
-        })),
-      });
-
-      await this.saveCommentFindingMapping(
-        octokit,
-        context,
-        payload,
-        review.id,
-        formattedComments,
+      const reviewBody = formatReviewSummary(payload.summary);
+      const existingReviewId = await this.primaryReviewStore.get(
+        payload.repositoryId,
+        payload.prNumber,
       );
+
+      if (existingReviewId !== null) {
+        await this.updateExistingReview(
+          octokit,
+          context,
+          payload,
+          existingReviewId,
+          reviewBody,
+          formattedComments,
+        );
+      } else {
+        await this.createInitialReview(
+          octokit,
+          context,
+          payload,
+          reviewBody,
+          formattedComments,
+        );
+      }
     } catch (err) {
       await this.notifyOrchestratorError(payload, context, err);
 
@@ -87,6 +93,91 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
 
       throw err;
     }
+  }
+
+  // 이 PR에 봇 리뷰가 처음 등록될 때만 호출된다. GitHub 리뷰(PR 타임라인의
+  // "reviewed" 배너)를 생성하고, 이후 push에서 body만 갱신할 수 있도록 그
+  // 리뷰의 id를 Redis에 저장해둔다.
+  private async createInitialReview(
+    octokit: Octokit,
+    context: ReviewJobContext,
+    payload: ReviewCompletedPayload,
+    body: string,
+    formattedComments: FormattedReviewComment[],
+  ): Promise<void> {
+    const { data: review } = await octokit.rest.pulls.createReview({
+      owner: context.owner,
+      repo: context.repo,
+      pull_number: payload.prNumber,
+      commit_id: payload.headSha,
+      event: 'COMMENT',
+      body,
+      comments: formattedComments.map(({ path, line, body: commentBody }) => ({
+        path,
+        line,
+        body: commentBody,
+      })),
+    });
+
+    await this.primaryReviewStore.set(
+      payload.repositoryId,
+      payload.prNumber,
+      review.id,
+    );
+
+    await this.saveCommentFindingMapping(
+      octokit,
+      context,
+      payload,
+      review.id,
+      formattedComments,
+    );
+  }
+
+  // 이미 이 PR에 봇 리뷰가 있으면(Redis에 review id 기록됨) push마다 새 리뷰를
+  // 만들어 PR 타임라인에 "reviewed" 배너가 계속 쌓이는 대신, 기존 리뷰의 body만
+  // 갱신(updateReview)하고 finding은 개별 리뷰 코멘트로 추가한다. updateReview는
+  // body만 바꿀 뿐 코멘트를 함께 추가할 수 없어 createReviewComment를 따로 호출한다.
+  private async updateExistingReview(
+    octokit: Octokit,
+    context: ReviewJobContext,
+    payload: ReviewCompletedPayload,
+    reviewId: number,
+    body: string,
+    formattedComments: FormattedReviewComment[],
+  ): Promise<void> {
+    await withRetry(() =>
+      octokit.rest.pulls.updateReview({
+        owner: context.owner,
+        repo: context.repo,
+        pull_number: payload.prNumber,
+        review_id: reviewId,
+        body,
+      }),
+    );
+
+    await Promise.all(
+      formattedComments.map(
+        async ({ path, line, body: commentBody, findingIndex }) => {
+          const { data: comment } = await withRetry(() =>
+            octokit.rest.pulls.createReviewComment({
+              owner: context.owner,
+              repo: context.repo,
+              pull_number: payload.prNumber,
+              commit_id: payload.headSha,
+              path,
+              line,
+              body: commentBody,
+            }),
+          );
+
+          await this.reviewCommentFindingStore.set(comment.id, {
+            reviewJobId: payload.reviewJobId,
+            findingIndex,
+          });
+        },
+      ),
+    );
   }
 
   // 생성된 리뷰 코멘트의 GitHub id를 원본 finding 인덱스로 역매핑해 저장한다.
