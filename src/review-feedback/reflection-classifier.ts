@@ -12,11 +12,15 @@ const NOT_REFLECTED_PATTERNS = [
   /보류/,
   /스킵/,
   /거부/,
+  /(안|못)\s*고(쳤|침|치)/,
+  /아직\s*(안|못|수정|반영|적용)/,
   /won'?t\s*fix/i,
   /wontfix/i,
   /not\s*fix(ing|ed)?/i,
   /\bskip(ped)?\b/i,
   /not\s*applicable/i,
+  /not\s+(yet\s+)?(done|resolved|addressed|applied|fixed)\b/i,
+  /\bnot\s+yet\b/i,
 ];
 
 const REFLECTED_PATTERNS = [
@@ -42,12 +46,14 @@ export function classifyReflection(
   const notReflected = NOT_REFLECTED_PATTERNS.some((pattern) =>
     pattern.test(text),
   );
-  const reflected = REFLECTED_PATTERNS.some((pattern) => pattern.test(text));
-
-  if (notReflected === reflected) return null; // 둘 다 매치 또는 둘 다 미매치 → 애매함
-
+  // 부정 패턴은 "안/못/not" 같은 명시적 부정어를 포함하도록 설계되어 있어
+  // 긍정 패턴(예: /고쳤/, /\bdone\b/)과 동시에 매치되더라도 부정 쪽이 더 신뢰도가
+  // 높다 ("아직 안 고쳤어요"는 /고쳤/도 매치하지만 명백히 미반영이다).
   if (notReflected) {
     return { reflected: false, reason: text.slice(0, REASON_MAX_LENGTH) };
   }
+
+  const reflected = REFLECTED_PATTERNS.some((pattern) => pattern.test(text));
+  if (!reflected) return null;
   return { reflected: true };
 }
