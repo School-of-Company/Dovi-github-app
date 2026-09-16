@@ -31,6 +31,12 @@ export class PrimaryReviewStore {
     );
   }
 
+  // 저장된 review id가 더 이상 GitHub에 존재하지 않을 때(삭제/dismiss됨) 호출해
+  // 다음 push에서 새 리뷰가 생성되도록 한다.
+  async delete(repositoryId: number, prNumber: number): Promise<void> {
+    await this.redis.del(this.key(repositoryId, prNumber));
+  }
+
   private key(repositoryId: number, prNumber: number): string {
     return `review:primary:${repositoryId}:${prNumber}`;
   }
