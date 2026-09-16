@@ -2,6 +2,7 @@ import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import type { Kafka, KafkaMessage } from 'kafkajs';
 import { BaseKafkaConsumer } from '../kafka/base-kafka.consumer';
 import { KAFKA_CLIENT } from '../kafka/kafka.constants';
+import { PoisonMessageError } from '../kafka/poison-message.error';
 import { IdempotencyStore } from '../redis/idempotency.store';
 import { JobStateStore } from '../redis/job-state.store';
 import { REVIEW_ORCHESTRATOR } from '../review-orchestrator/review-orchestrator.interface';
@@ -46,11 +47,11 @@ export class ReviewResultConsumerService
     }
 
     if (topic === this.completedTopic) {
-      const payload = JSON.parse(
-        message.value.toString(),
-      ) as ReviewCompletedPayload;
+      const payload = this.parse<ReviewCompletedPayload>(message);
       if (!payload?.reviewJobId) {
-        throw new Error('Invalid completed payload: reviewJobId is missing');
+        throw new PoisonMessageError(
+          'Invalid completed payload: reviewJobId is missing',
+        );
       }
       await this.orchestrator.handle(payload);
       await Promise.all([
@@ -61,11 +62,11 @@ export class ReviewResultConsumerService
     }
 
     if (topic === this.failedTopic) {
-      const payload = JSON.parse(
-        message.value.toString(),
-      ) as ReviewFailedPayload;
+      const payload = this.parse<ReviewFailedPayload>(message);
       if (!payload?.reviewJobId) {
-        throw new Error('Invalid failed payload: reviewJobId is missing');
+        throw new PoisonMessageError(
+          'Invalid failed payload: reviewJobId is missing',
+        );
       }
       await this.orchestrator.handle(payload);
       await this.jobStateStore.set(payload.reviewJobId, 'failed');
@@ -73,5 +74,15 @@ export class ReviewResultConsumerService
     }
 
     this.logger.warn(`알 수 없는 토픽 메시지 수신, 스킵: topic=${topic}`);
+  }
+
+  private parse<T>(message: KafkaMessage): T {
+    try {
+      return JSON.parse(message.value!.toString()) as T;
+    } catch (err) {
+      throw new PoisonMessageError(
+        `JSON 파싱 실패: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 }

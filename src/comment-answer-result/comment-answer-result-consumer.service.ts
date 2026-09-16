@@ -2,6 +2,7 @@ import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import type { Kafka, KafkaMessage } from 'kafkajs';
 import { BaseKafkaConsumer } from '../kafka/base-kafka.consumer';
 import { KAFKA_CLIENT } from '../kafka/kafka.constants';
+import { PoisonMessageError } from '../kafka/poison-message.error';
 import { IdempotencyStore } from '../redis/idempotency.store';
 import { JobStateStore } from '../redis/job-state.store';
 import { COMMENT_ANSWER_RESPONDER } from './comment-answer-responder.interface';
@@ -47,11 +48,11 @@ export class CommentAnswerResultConsumerService
     }
 
     if (topic === this.completedTopic) {
-      const payload = JSON.parse(
-        message.value.toString(),
-      ) as CommentAnswerCompletedPayload;
+      const payload = this.parse<CommentAnswerCompletedPayload>(message);
       if (!payload?.commentJobId) {
-        throw new Error('Invalid completed payload: commentJobId is missing');
+        throw new PoisonMessageError(
+          'Invalid completed payload: commentJobId is missing',
+        );
       }
       await this.responder.handle(payload);
       await Promise.all([
@@ -62,11 +63,11 @@ export class CommentAnswerResultConsumerService
     }
 
     if (topic === this.failedTopic) {
-      const payload = JSON.parse(
-        message.value.toString(),
-      ) as CommentAnswerFailedPayload;
+      const payload = this.parse<CommentAnswerFailedPayload>(message);
       if (!payload?.commentJobId) {
-        throw new Error('Invalid failed payload: commentJobId is missing');
+        throw new PoisonMessageError(
+          'Invalid failed payload: commentJobId is missing',
+        );
       }
       await this.responder.handle(payload);
       await this.jobStateStore.set(payload.commentJobId, 'failed');
@@ -74,5 +75,15 @@ export class CommentAnswerResultConsumerService
     }
 
     this.logger.warn(`알 수 없는 토픽 메시지 수신, 스킵: topic=${topic}`);
+  }
+
+  private parse<T>(message: KafkaMessage): T {
+    try {
+      return JSON.parse(message.value!.toString()) as T;
+    } catch (err) {
+      throw new PoisonMessageError(
+        `JSON 파싱 실패: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 }
