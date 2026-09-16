@@ -288,6 +288,13 @@ export class WebhookService {
     const installationId = payload.installation!.id;
     const commentId = payload.comment!.id;
 
+    this.reviewReactionService.notifyIssueCommentInProgress(
+      installationId,
+      owner,
+      repo,
+      commentId,
+    );
+
     this.prDataCollectorService
       .collectByPrNumber(
         installationId,

@@ -1,4 +1,4 @@
-import { Global, Module } from '@nestjs/common';
+import { Global, Logger, Module } from '@nestjs/common';
 import Redis from 'ioredis';
 import { IdempotencyStore } from './idempotency.store';
 import { JobStateStore } from './job-state.store';
@@ -13,7 +13,17 @@ import { REDIS_CLIENT } from './redis.constants';
   providers: [
     {
       provide: REDIS_CLIENT,
-      useFactory: () => new Redis(process.env.REDIS_URL!),
+      useFactory: () => {
+        const url = process.env.REDIS_URL;
+        if (!url) {
+          throw new Error('REDIS_URL environment variable is not defined');
+        }
+        const client = new Redis(url);
+        client.on('error', (err) => {
+          new Logger('RedisModule').error('Redis 연결 오류', err);
+        });
+        return client;
+      },
     },
     IdempotencyStore,
     JobStateStore,

@@ -46,6 +46,22 @@ export class ReviewReactionService {
     });
   }
 
+  async markIssueCommentInProgress(
+    installationId: number,
+    owner: string,
+    repo: string,
+    commentId: number,
+  ): Promise<void> {
+    const octokit =
+      await this.installationTokenManager.getOctokit(installationId);
+    await octokit.rest.reactions.createForIssueComment({
+      owner,
+      repo,
+      comment_id: commentId,
+      content: 'eyes',
+    });
+  }
+
   notifyPrInProgress(
     installationId: number,
     owner: string,
@@ -72,6 +88,22 @@ export class ReviewReactionService {
       commentId,
     ).catch((err: unknown) => {
       this.logger.warn(`comment #${commentId} 👀 리액션 추가 실패`, err);
+    });
+  }
+
+  notifyIssueCommentInProgress(
+    installationId: number,
+    owner: string,
+    repo: string,
+    commentId: number,
+  ): void {
+    this.markIssueCommentInProgress(
+      installationId,
+      owner,
+      repo,
+      commentId,
+    ).catch((err: unknown) => {
+      this.logger.warn(`issue comment #${commentId} 👀 리액션 추가 실패`, err);
     });
   }
 }
