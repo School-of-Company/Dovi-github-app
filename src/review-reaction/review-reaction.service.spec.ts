@@ -5,16 +5,22 @@ describe('ReviewReactionService', () => {
 
   let createForIssue: jest.Mock;
   let createForPullRequestReviewComment: jest.Mock;
+  let createForIssueComment: jest.Mock;
   let installationTokenManager: { getOctokit: jest.Mock };
   let service: ReviewReactionService;
 
   beforeEach(() => {
     createForIssue = jest.fn().mockResolvedValue(undefined);
     createForPullRequestReviewComment = jest.fn().mockResolvedValue(undefined);
+    createForIssueComment = jest.fn().mockResolvedValue(undefined);
     installationTokenManager = {
       getOctokit: jest.fn().mockResolvedValue({
         rest: {
-          reactions: { createForIssue, createForPullRequestReviewComment },
+          reactions: {
+            createForIssue,
+            createForPullRequestReviewComment,
+            createForIssueComment,
+          },
         },
       }),
     };
@@ -57,6 +63,26 @@ describe('ReviewReactionService', () => {
 
     expect(() =>
       service.notifyReviewCommentInProgress(10, 'owner', 'repo', 999),
+    ).not.toThrow();
+    await flush();
+  });
+
+  it('markIssueCommentInProgress는 PR 대화창 코멘트에 eyes 리액션을 추가한다', async () => {
+    await service.markIssueCommentInProgress(10, 'owner', 'repo', 123);
+
+    expect(createForIssueComment).toHaveBeenCalledWith({
+      owner: 'owner',
+      repo: 'repo',
+      comment_id: 123,
+      content: 'eyes',
+    });
+  });
+
+  it('notifyIssueCommentInProgress는 실패해도 예외를 던지지 않는다', async () => {
+    createForIssueComment.mockRejectedValue(new Error('gone'));
+
+    expect(() =>
+      service.notifyIssueCommentInProgress(10, 'owner', 'repo', 123),
     ).not.toThrow();
     await flush();
   });

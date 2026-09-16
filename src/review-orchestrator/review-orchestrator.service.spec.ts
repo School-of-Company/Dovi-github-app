@@ -20,7 +20,7 @@ describe('ReviewOrchestratorService', () => {
   let installationTokenManager: { getOctokit: jest.Mock };
   let reviewJobContextStore: { get: jest.Mock };
   let reviewCommentFindingStore: { set: jest.Mock };
-  let primaryReviewStore: { get: jest.Mock; set: jest.Mock };
+  let primaryReviewStore: { get: jest.Mock; set: jest.Mock; delete: jest.Mock };
   let dicoshot: { sendCustom: jest.Mock };
   let service: ReviewOrchestratorService;
 
@@ -75,6 +75,7 @@ describe('ReviewOrchestratorService', () => {
     primaryReviewStore = {
       get: jest.fn().mockResolvedValue(null),
       set: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn().mockResolvedValue(undefined),
     };
     dicoshot = { sendCustom: jest.fn() };
 
@@ -317,6 +318,22 @@ describe('ReviewOrchestratorService', () => {
     expect(createReview).toHaveBeenCalled();
   });
 
+  it('봇 루트 코멘트에 사람 답글이 달려 있으면 스레드 전체를 보존한다', async () => {
+    process.env.GITHUB_BOT_LOGIN = 'dovi-code-assist';
+    paginate.mockResolvedValue([
+      { id: 1, user: { login: 'dovi-code-assist[bot]' }, in_reply_to_id: null },
+      { id: 2, user: { login: 'human-reviewer' }, in_reply_to_id: 1 },
+      { id: 3, user: { login: 'dovi-code-assist[bot]' }, in_reply_to_id: null },
+    ]);
+
+    await service.handle(completedPayload);
+
+    expect(deleteReviewComment).toHaveBeenCalledTimes(1);
+    expect(deleteReviewComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 3 }),
+    );
+  });
+
   it('이전 코멘트 정리 중 에러가 나도 새 리뷰 등록은 계속 진행한다', async () => {
     process.env.GITHUB_BOT_LOGIN = 'dovi-code-assist';
     paginate.mockRejectedValue(new Error('list failed'));
@@ -409,6 +426,17 @@ describe('ReviewOrchestratorService', () => {
       expect(dicoshot.sendCustom).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'GitHub 리뷰 등록 실패' }),
       );
+    });
+
+    it('updateReview가 404를 던지면 저장된 review id를 지우고 새 리뷰를 생성한다', async () => {
+      updateReview.mockRejectedValue(makeHttpError(404));
+
+      await service.handle(completedPayload);
+
+      expect(primaryReviewStore.delete).toHaveBeenCalledWith(1, 1);
+      expect(createReview).toHaveBeenCalled();
+      expect(primaryReviewStore.set).toHaveBeenCalledWith(1, 1, 555);
+      expect(dicoshot.sendCustom).not.toHaveBeenCalled();
     });
   });
 });

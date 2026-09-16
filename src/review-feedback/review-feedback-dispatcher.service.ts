@@ -20,11 +20,10 @@ export class ReviewFeedbackDispatcherService {
   ): Promise<void> {
     const jobId = `feedback:${commentId}`;
 
-    if (await this.idempotencyStore.exists(jobId)) {
+    if (!(await this.idempotencyStore.acquire(jobId))) {
       this.logger.log(`이미 처리된 반영 여부 코멘트, 스킵: ${jobId}`);
       return;
     }
-    await this.idempotencyStore.markProcessed(jobId);
 
     try {
       await this.kafkaProducer.send(
@@ -33,6 +32,7 @@ export class ReviewFeedbackDispatcherService {
         payload.reviewJobId,
       );
     } catch (err) {
+      await this.idempotencyStore.release(jobId);
       this.logger.error(`Kafka 발행 실패: ${jobId}`, err);
       throw err;
     }

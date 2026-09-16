@@ -54,6 +54,7 @@ describe('WebhookService', () => {
   let reviewReactionService: {
     notifyPrInProgress: jest.Mock;
     notifyReviewCommentInProgress: jest.Mock;
+    notifyIssueCommentInProgress: jest.Mock;
   };
   let service: WebhookService;
 
@@ -83,6 +84,7 @@ describe('WebhookService', () => {
     reviewReactionService = {
       notifyPrInProgress: jest.fn(),
       notifyReviewCommentInProgress: jest.fn(),
+      notifyIssueCommentInProgress: jest.fn(),
     };
 
     service = new WebhookService(
@@ -336,7 +338,7 @@ describe('WebhookService', () => {
     };
   }
 
-  it('PR 대화창에 "/dovi review" 코멘트를 남기면 전체 재리뷰 파이프라인을 실행한다', async () => {
+  it('PR 대화창에 "/dovi review" 코멘트를 남기면 전체 재리뷰 파이프라인을 실행하고 👀 리액션을 남긴다', async () => {
     service.handle('issue_comment', issueCommentPayload());
     await flush();
 
@@ -351,6 +353,9 @@ describe('WebhookService', () => {
       expect.objectContaining({ reviewJobId: '1_1_sha_c999' }),
       { owner: 'owner', repo: 'repo', prNumber: 1, installationId: 10 },
     );
+    expect(
+      reviewReactionService.notifyIssueCommentInProgress,
+    ).toHaveBeenCalledWith(10, 'owner', 'repo', 999);
   });
 
   it('PR 대화창에서 봇을 멘션만 해도(명령어 아니어도) 전체 재리뷰를 실행한다', async () => {
