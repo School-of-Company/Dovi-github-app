@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { Octokit } from '@octokit/rest';
 import { enforceContentBudget } from '../common/content-budget';
-import { fetchFileContent } from '../common/github-content';
+import { describeSkipReason, fetchFileContent } from '../common/github-content';
 import { withRetry } from '../common/retry';
 import { isSecretPath } from '../common/secret-path';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
@@ -206,23 +206,49 @@ export class PrDataCollectorService {
         }),
       );
 
+    // content 를 실지 못한 파일은 이유를 남긴다. 파일이 리뷰 컨텍스트에서 빠지면 모델은 그
+    // 사실만 알고 이유는 모르기 때문에, 로그가 없으면 "왜 이 파일이 리뷰에 없나"를 추적할 수단이
+    // 사라진다 (실제로 175바이트 파일 누락 원인을 찾느라 API 를 직접 호출해봐야 했다).
+    const skipped: string[] = [];
+
     await Promise.all(
       changedFiles.map(async (file) => {
         if (file.status === 'removed') return;
-        if (!hasAstSupportedExtension(file.filePath)) return;
-        if (isSecretPath(file.filePath)) return;
+        if (!hasAstSupportedExtension(file.filePath)) {
+          skipped.push(`${file.filePath} (AST 미지원 확장자)`);
+          return;
+        }
+        if (isSecretPath(file.filePath)) {
+          skipped.push(`${file.filePath} (시크릿 경로)`);
+          return;
+        }
 
-        file.content =
-          (await fetchFileContent(
-            octokit,
-            owner,
-            repo,
-            headSha,
-            file.filePath,
-            CHANGED_FILE_CONTENT_SIZE_LIMIT,
-          )) ?? undefined;
+        const result = await fetchFileContent(
+          octokit,
+          owner,
+          repo,
+          headSha,
+          file.filePath,
+          CHANGED_FILE_CONTENT_SIZE_LIMIT,
+        );
+        file.content = result.content ?? undefined;
+        if (result.skipReason) {
+          skipped.push(
+            `${file.filePath} (${describeSkipReason(
+              result.skipReason,
+              CHANGED_FILE_CONTENT_SIZE_LIMIT,
+              result.size,
+            )})`,
+          );
+        }
       }),
     );
+
+    if (skipped.length > 0) {
+      this.logger.log(
+        `PR #${prNumber} changedFiles content 제외 ${skipped.length}건 (hunk 만으로 리뷰): ${skipped.join(', ')}`,
+      );
+    }
 
     // 예산을 넘으면 큰 파일부터 content를 비워 hunk 기반 리뷰로 fallback시킨다
     // (ai-server는 content가 없으면 hunk만으로 리뷰를 진행한다).
@@ -304,7 +330,7 @@ export class PrDataCollectorService {
     headSha: string,
     path: string,
   ): Promise<ContextFile | null> {
-    const content = await fetchFileContent(
+    const result = await fetchFileContent(
       octokit,
       owner,
       repo,
@@ -312,8 +338,20 @@ export class PrDataCollectorService {
       path,
       CONTEXT_FILE_SIZE_LIMIT,
     );
-    if (content === null) return null;
+    if (result.content === null) {
+      // 404 는 흔한 정상 경로(그 레포에 없는 설정 파일)라 로그를 남기지 않는다.
+      if (result.skipReason && result.skipReason !== 'not-found') {
+        this.logger.warn(
+          `컨텍스트 파일 ${path} 제외: ${describeSkipReason(
+            result.skipReason,
+            CONTEXT_FILE_SIZE_LIMIT,
+            result.size,
+          )}`,
+        );
+      }
+      return null;
+    }
 
-    return { path, content, source: 'github' };
+    return { path, content: result.content, source: 'github' };
   }
 }

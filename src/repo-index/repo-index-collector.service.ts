@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { Octokit } from '@octokit/rest';
 import { enforceContentBudget } from '../common/content-budget';
 import { parseIndexBranch } from '../common/dovi-md';
-import { fetchFileContent } from '../common/github-content';
+import { describeSkipReason, fetchFileContent } from '../common/github-content';
 import { withRetry } from '../common/retry';
 import { isSecretPath } from '../common/secret-path';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
@@ -45,7 +45,7 @@ export class RepoIndexCollectorService {
   ): Promise<string> {
     const octokit =
       await this.installationTokenManager.getOctokit(installationId);
-    const content = await fetchFileContent(
+    const result = await fetchFileContent(
       octokit,
       owner,
       repo,
@@ -53,9 +53,22 @@ export class RepoIndexCollectorService {
       'DOVI.md',
       FILE_CONTENT_SIZE_LIMIT,
     );
-    if (!content) return defaultBranch;
+    // DOVI.md 가 없는 레포가 대부분이라 404 는 로그하지 않는다. 그 밖의 이유로 못 읽었다면
+    // 설정이 무시된 셈이므로 남긴다.
+    if (result.content === null) {
+      if (result.skipReason && result.skipReason !== 'not-found') {
+        this.logger.warn(
+          `${owner}/${repo} DOVI.md 읽기 실패로 기본 브랜치 사용: ${describeSkipReason(
+            result.skipReason,
+            FILE_CONTENT_SIZE_LIMIT,
+            result.size,
+          )}`,
+        );
+      }
+      return defaultBranch;
+    }
 
-    return parseIndexBranch(content) ?? defaultBranch;
+    return parseIndexBranch(result.content) ?? defaultBranch;
   }
 
   async collect(
@@ -96,22 +109,42 @@ export class RepoIndexCollectorService {
         status: file.status,
       }));
 
+    const skipped: string[] = [];
+
     await Promise.all(
       changedFiles.map(async (file) => {
         if (file.status === 'removed') return;
-        if (isSecretPath(file.filePath)) return;
+        if (isSecretPath(file.filePath)) {
+          skipped.push(`${file.filePath} (시크릿 경로)`);
+          return;
+        }
 
-        file.content =
-          (await fetchFileContent(
-            octokit,
-            owner,
-            repo,
-            after,
-            file.filePath,
-            FILE_CONTENT_SIZE_LIMIT,
-          )) ?? undefined;
+        const result = await fetchFileContent(
+          octokit,
+          owner,
+          repo,
+          after,
+          file.filePath,
+          FILE_CONTENT_SIZE_LIMIT,
+        );
+        file.content = result.content ?? undefined;
+        if (result.skipReason) {
+          skipped.push(
+            `${file.filePath} (${describeSkipReason(
+              result.skipReason,
+              FILE_CONTENT_SIZE_LIMIT,
+              result.size,
+            )})`,
+          );
+        }
       }),
     );
+
+    if (skipped.length > 0) {
+      this.logger.log(
+        `${owner}/${repo} 인덱싱 content 제외 ${skipped.length}건: ${skipped.join(', ')}`,
+      );
+    }
 
     const dropped = enforceContentBudget(
       changedFiles,
