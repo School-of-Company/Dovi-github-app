@@ -6,7 +6,10 @@ describe('ReviewReactionService', () => {
   let createForIssue: jest.Mock;
   let createForPullRequestReviewComment: jest.Mock;
   let createForIssueComment: jest.Mock;
-  let installationTokenManager: { getOctokit: jest.Mock };
+  let installationTokenManager: {
+    getOctokit: jest.Mock;
+    getScopedToken: jest.Mock;
+  };
   let service: ReviewReactionService;
 
   beforeEach(() => {
@@ -23,6 +26,7 @@ describe('ReviewReactionService', () => {
           },
         },
       }),
+      getScopedToken: jest.fn(),
     };
     service = new ReviewReactionService(installationTokenManager);
   });
