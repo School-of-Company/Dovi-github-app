@@ -7,7 +7,10 @@ function toBase64(content: string): string {
 describe('RepoIndexCollectorService', () => {
   let getContent: jest.Mock;
   let compareCommitsWithBasehead: jest.Mock;
-  let installationTokenManager: { getOctokit: jest.Mock };
+  let installationTokenManager: {
+    getOctokit: jest.Mock;
+    getScopedToken: jest.Mock;
+  };
   let service: RepoIndexCollectorService;
 
   beforeEach(() => {
@@ -22,6 +25,7 @@ describe('RepoIndexCollectorService', () => {
 
     installationTokenManager = {
       getOctokit: jest.fn().mockResolvedValue(octokit),
+      getScopedToken: jest.fn(),
     };
 
     service = new RepoIndexCollectorService(installationTokenManager);

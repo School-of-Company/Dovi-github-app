@@ -11,7 +11,10 @@ function makeHttpError(status: number): Error & { status: number } {
 
 describe('CommentAnswerResponderService', () => {
   let createReplyForReviewComment: jest.Mock;
-  let installationTokenManager: { getOctokit: jest.Mock };
+  let installationTokenManager: {
+    getOctokit: jest.Mock;
+    getScopedToken: jest.Mock;
+  };
   let commentAnswerContextStore: { get: jest.Mock };
   let dicoshot: { sendCustom: jest.Mock };
   let service: CommentAnswerResponderService;
@@ -40,6 +43,7 @@ describe('CommentAnswerResponderService', () => {
       getOctokit: jest.fn().mockResolvedValue({
         rest: { pulls: { createReplyForReviewComment } },
       }),
+      getScopedToken: jest.fn(),
     };
     commentAnswerContextStore = { get: jest.fn().mockResolvedValue(context) };
     dicoshot = { sendCustom: jest.fn() };

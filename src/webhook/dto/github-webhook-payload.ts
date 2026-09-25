@@ -14,6 +14,12 @@ export interface GithubWebhookPayload {
     body: string | null;
     head: {
       sha: string;
+      // fork PR 판별용. fork 저장소에서 온 PR은 이 repo가 base repository와
+      // 다르다 (샌드박스 프로브 등 clone이 필요한 기능은 v1에서 fork PR 제외).
+      repo: {
+        id: number;
+        full_name: string;
+      } | null;
     };
     base: {
       sha: string;

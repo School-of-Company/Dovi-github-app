@@ -5,7 +5,10 @@ import type { Redis } from 'ioredis';
 import { createTimedFetch } from '../common/timed-fetch';
 import { withRetry } from '../common/retry';
 import { REDIS_CLIENT } from '../redis/redis.constants';
-import type { InstallationTokenManager } from './installation-token-manager.interface';
+import type {
+  InstallationTokenManager,
+  TokenScope,
+} from './installation-token-manager.interface';
 
 // installation token은 GitHub에서 발급 후 1시간 뒤 만료된다. 실제 만료시각보다
 // 일찍 캐시를 비워야 하므로 안전 마진을 둔다.
@@ -36,17 +39,40 @@ export class InstallationTokenManagerService implements InstallationTokenManager
   }
 
   async getOctokit(installationId: number): Promise<Octokit> {
-    const cacheKey = this.tokenKey(installationId);
+    const token = await this.fetchToken(installationId);
+    return new Octokit({ auth: token, request: { fetch: createTimedFetch() } });
+  }
+
+  async getScopedToken(
+    installationId: number,
+    scope: TokenScope,
+  ): Promise<string> {
+    return this.fetchToken(installationId, scope);
+  }
+
+  private async fetchToken(
+    installationId: number,
+    scope?: TokenScope,
+  ): Promise<string> {
+    const cacheKey = this.tokenKey(installationId, scope);
     const cachedToken = await this.redis.get(cacheKey);
-    if (cachedToken) {
-      return new Octokit({
-        auth: cachedToken,
-        request: { fetch: createTimedFetch() },
-      });
-    }
+    if (cachedToken) return cachedToken;
 
     const { token, expiresAt } = await withRetry(() =>
-      this.appAuth({ type: 'installation', installationId }),
+      this.appAuth({
+        type: 'installation',
+        installationId,
+        // 빈 객체/배열도 truthy이므로 length까지 확인한다 — GitHub의 installation
+        // access token 발급 API는 permissions/repositoryIds 키 자체를 생략해야
+        // "설치 시점의 전체 권한/전체 저장소"로 대체되고, 빈 값을 명시적으로
+        // 보내면 "권한/저장소 없음"으로 해석될 수 있다.
+        ...(scope?.permissions && Object.keys(scope.permissions).length > 0
+          ? { permissions: scope.permissions }
+          : {}),
+        ...(scope?.repositoryIds && scope.repositoryIds.length > 0
+          ? { repositoryIds: scope.repositoryIds }
+          : {}),
+      }),
     );
 
     const ttlSeconds =
@@ -56,10 +82,23 @@ export class InstallationTokenManagerService implements InstallationTokenManager
       await this.redis.set(cacheKey, token, 'EX', ttlSeconds);
     }
 
-    return new Octokit({ auth: token, request: { fetch: createTimedFetch() } });
+    return token;
   }
 
-  private tokenKey(installationId: number): string {
-    return `github:token:${installationId}`;
+  // 스코프가 다르면 반드시 다른 캐시 키를 써야 한다 — 그러지 않으면 contents:read로
+  // 좁힌 토큰이 캐시를 선점해 이후 전체 권한이 필요한 호출(예: pulls.createReview)이
+  // 403으로 실패할 수 있다.
+  private tokenKey(installationId: number, scope?: TokenScope): string {
+    if (!scope) return `github:token:${installationId}`;
+
+    const permissionsPart = Object.keys(scope.permissions)
+      .sort()
+      .map((key) => `${key}:${scope.permissions[key]}`)
+      .join(',');
+    const repositoryIdsPart = [...(scope.repositoryIds ?? [])]
+      .sort((a, b) => a - b)
+      .join(',');
+
+    return `github:token:${installationId}:${permissionsPart}:${repositoryIdsPart}`;
   }
 }
