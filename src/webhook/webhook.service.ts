@@ -9,6 +9,8 @@ import { ReviewFeedbackDispatcherService } from '../review-feedback/review-feedb
 import { classifyReflection } from '../review-feedback/reflection-classifier';
 import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import { ReviewReactionService } from '../review-reaction/review-reaction.service';
+import { SandboxProbeDispatcherService } from '../sandbox-probe/sandbox-probe-dispatcher.service';
+import { isForkPr } from './fork-pr.util';
 import type { GithubWebhookPayload } from './dto/github-webhook-payload';
 import type { ReplyContext } from '../pr-data-collector/dto/review-request.payload';
 import type { CommentAnswerRequestPayload } from '../comment-answer/dto/comment-answer-request.payload';
@@ -32,6 +34,7 @@ export class WebhookService {
     private readonly reviewFeedbackDispatcherService: ReviewFeedbackDispatcherService,
     private readonly reviewCommentFindingStore: ReviewCommentFindingStore,
     private readonly reviewReactionService: ReviewReactionService,
+    private readonly sandboxProbeDispatcherService: SandboxProbeDispatcherService,
   ) {}
 
   handle(event: string, payload: GithubWebhookPayload): void {
@@ -66,6 +69,20 @@ export class WebhookService {
       repo,
       payload.pull_request!.number,
     );
+
+    // 메인 리뷰 발행과 완전히 독립된 경로 — 샌드박스 프로브 발행 여부 판단이나
+    // 발행 자체가 실패해도 메인 리뷰에는 전혀 영향을 주지 않는다.
+    this.sandboxProbeDispatcherService.notifyPrOpened({
+      installationId: payload.installation!.id,
+      owner,
+      repo,
+      repositoryId: payload.repository.id,
+      defaultBranch: payload.repository.default_branch,
+      prNumber: payload.pull_request!.number,
+      headSha: payload.pull_request!.head.sha,
+      baseSha: payload.pull_request!.base.sha,
+      isFork: isForkPr(payload),
+    });
 
     this.prDataCollectorService
       .collect({

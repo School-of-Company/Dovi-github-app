@@ -8,11 +8,13 @@ Kafka 이벤트의 토픽 이름과 페이로드 필드 명명 규칙을 정리�
 
 `<도메인>.<대상>.<이벤트>` 형태의 dot-separated, 소문자 스네이크 없는 케밥성 네이밍을 사용한다.
 
-| 토픽                  | 방향                   | 환경변수 (github-app)          |
-| --------------------- | ---------------------- | ------------------------------ |
-| `pr.review.requested` | github-app → ai-server | `KAFKA_REVIEW_REQUEST_TOPIC`   |
-| `pr.review.completed` | ai-server → github-app | `KAFKA_REVIEW_COMPLETED_TOPIC` |
-| `pr.review.failed`    | ai-server → github-app | `KAFKA_REVIEW_FAILED_TOPIC`    |
+| 토픽                         | 방향                   | 환경변수 (github-app)                 |
+| ---------------------------- | ---------------------- | ------------------------------------- |
+| `pr.review.requested`        | github-app → ai-server | `KAFKA_REVIEW_REQUEST_TOPIC`          |
+| `pr.review.completed`        | ai-server → github-app | `KAFKA_REVIEW_COMPLETED_TOPIC`        |
+| `pr.review.failed`           | ai-server → github-app | `KAFKA_REVIEW_FAILED_TOPIC`           |
+| `pr.sandbox.probe.requested` | github-app → ai-server | `KAFKA_SANDBOX_PROBE_REQUEST_TOPIC`   |
+| `pr.sandbox.probe.completed` | ai-server → github-app | `KAFKA_SANDBOX_PROBE_COMPLETED_TOPIC` |
 
 ## 메시지 key
 
@@ -134,11 +136,59 @@ github-app → ai-server. 봇 리뷰 코멘트 스레드에 달린 답글을 텍
 | `reflected`    | boolean |                                                            |
 | `reason`       | string? | `reflected: false`일 때만 채움 (답글 원문, 200자 truncate) |
 
-메시지 key: `reviewJobId`. `findingIndex`는 리뷰 등록 시 `ReviewCommentFindingStore`(Redis, TTL 1시간)에 GitHub 코멘트 id → `{reviewJobId, findingIndex}`로 저장해두었다가, 그 코멘트에 답글이 달렸을 때 역조회한다.
+메시지 key: `reviewJobId`. `findingIndex`는 리뷰 등록 시 `ReviewCommentFindingStore`(Redis, TTL 30일 — PR이 열려있는 동안 언제든 답글이 달릴 수 있어 `PrimaryReviewStore`와 동일하게 잡는다)에 GitHub 코멘트 id → `{reviewJobId, findingIndex}`로 저장해두었다가, 그 코멘트에 답글이 달렸을 때 역조회한다.
+
+### `pr.sandbox.probe.requested`
+
+github-app → ai-server. 메인 리뷰 발행 경로와 완전히 독립된 경로(`SandboxProbeDispatcherService`)에서 발행한다 — 이 경로의 성공/실패가 메인 리뷰에 영향을 주지 않는다. PR 이벤트(`opened`/`synchronize`/`reopened`, draft 제외)마다 아래 조건을 모두 만족할 때만 발행한다:
+
+1. 발행 측 킬스위치(`SANDBOX_PROBE_PUBLISH_ENABLED=true`) 켜짐
+2. 같은 레포 브랜치 PR (fork PR 제외 — `isForkPr()`)
+3. 레포별 opt-in (`DOVI.md`의 `## Sandbox Probe` 섹션 값이 `true`/`on`/`enabled`/`yes`, `default_branch` 기준으로 읽음)
+4. 지원 스택 감지 (`package.json`의 `dependencies`/`devDependencies`에 `@nestjs/core` 존재, PR head 기준)
+5. 문서 전용 PR이 아님 (변경 파일이 전부 `docs/` 하위이거나 `.md`/`.mdx`면 스킵 — lockfile만 바뀐 PR은 문서 전용으로 취급하지 않는다)
+
+| 필드           | 타입   | 비고                                                                                                                                                                                                                                           |
+| -------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reviewJobId`  | string | `pr.review.requested`와 동일한 포맷(`{repositoryId}:{prNumber}:{headSha}`)이지만 별개 트랙 — github-app 쪽 dedup 키는 `sandbox:{reviewJobId}`로 네임스페이스를 분리해 메인 리뷰 idempotency와 충돌하지 않게 한다(과거 실제 충돌 사고 #40 참고) |
+| `repositoryId` | number |                                                                                                                                                                                                                                                |
+| `repoFullName` | string | `owner/repo` — clone에 필수. **"한쪽만 쓰는 필드는 이벤트에 안 싣는다"는 아래 요약 원칙 4번의 의도적 예외**(ai-server가 실제로 clone에 소비)                                                                                                   |
+| `prNumber`     | number |                                                                                                                                                                                                                                                |
+| `headSha`      | string | clone 시 이 sha로 고정 checkout (브랜치 tip이 아님 — TOCTOU 방지)                                                                                                                                                                              |
+| `baseSha`      | string |                                                                                                                                                                                                                                                |
+
+메시지 key: `reviewJobId`. github-app은 발행 시 `SandboxProbeJobContextStore`(Redis, TTL 2시간)에 `reviewJobId` → `{owner, repo, prNumber, installationId}`를 저장해, completed 이벤트를 받았을 때 어느 PR에 코멘트를 달지 알아낸다.
+
+### `pr.sandbox.probe.completed`
+
+ai-server → github-app. `SandboxProbeResultConsumerService`(독립 컨슈머 그룹 `github-app-sandbox-probe-result` — 기존 `github-app-review-result`에 얹지 않음)가 받아 `SandboxProbeResponderService`로 처리한다. `failed` 토픽은 없다 — 실패도 `status: "inconclusive"`로 이 토픽에 실어 보낸다.
+
+| 필드           | 타입                                          | 비고                                                                                   |
+| -------------- | --------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `reviewJobId`  | string                                        | 요청 이벤트와 동일                                                                     |
+| `repositoryId` | number                                        |                                                                                        |
+| `prNumber`     | number                                        |                                                                                        |
+| `headSha`      | string                                        |                                                                                        |
+| `status`       | `'passed' \| 'found_issue' \| 'inconclusive'` |                                                                                        |
+| `evidence`     | string                                        | 전체 요약 근거, 최대 8KB(초과 시 뒷부분 우선 보존 — 빌드 에러는 보통 출력 끝에 나온다) |
+| `findings`     | array                                         | 최대 10개. 아래 `Finding` 참고                                                         |
+
+`Finding`:
+
+| 필드       | 타입                                     | 비고                                                                                                        |
+| ---------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `probe`    | `'init_order' \| 'lifecycle' \| 'build'` |                                                                                                             |
+| `title`    | string                                   |                                                                                                             |
+| `message`  | string                                   |                                                                                                             |
+| `filePath` | string \| null                           | 메인 리뷰의 `ReviewComment`와 달리 특정 라인을 가리킬 수 없는 finding(예: 생명주기 훅 누락)이 있어 nullable |
+| `line`     | number \| null                           | 위와 동일한 이유로 nullable (메인 리뷰의 `line: number, gt=0` 필수와 다름)                                  |
+| `evidence` | string                                   | 최대 4KB                                                                                                    |
+
+github-app은 이 이벤트를 받으면 **메인 리뷰 코멘트(`pulls.createReview`)는 건드리지 않고**, PR 대화창에 마커 주석(`<!-- dovi:sandbox-probe -->`) 기반 sticky 코멘트를 upsert한다(`issues.createComment`/`issues.updateComment`) — 재푸시마다 코멘트가 쌓이지 않도록 항상 같은 코멘트를 갱신하며, 상태별 이모지(✅/🐛/⚠️)를 붙인다. 게시 전 evidence는 본문에 등장하는 최장 백틱 런보다 긴 코드펜스로 감싸고 `@` 멘션을 무력화(zero-width space 삽입)한다. LLM은 개입하지 않는다 — 요약 문구는 프로브 스크립트의 고정 템플릿이다.
 
 ## 요약 원칙
 
 1. 토픽 이름: `도메인.대상.이벤트` (dot-separated).
 2. JSON 필드: 항상 camelCase (Python 쪽은 pydantic alias로 변환).
 3. `reviewJobId`: `{repositoryId}:{prNumber}:{headSha}`, 콜론 구분.
-4. 페이로드는 **실제로 상대편이 보내거나 읽는 필드만** 포함한다 — 한쪽만 쓰는 필드(예: 과거의 `diff`, `owner`, `repo`)는 이벤트에 싣지 않고 필요한 서비스 내부에서만 사용한다.
+4. 페이로드는 **실제로 상대편이 보내거나 읽는 필드만** 포함한다 — 한쪽만 쓰는 필드(예: 과거의 `diff`, `owner`, `repo`)는 이벤트에 싣지 않고 필요한 서비스 내부에서만 사용한다. `pr.sandbox.probe.requested`의 `repoFullName`은 의도적 예외 — clone에 필수라 ai-server가 실제로 소비한다.
