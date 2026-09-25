@@ -17,7 +17,10 @@ describe('ReviewOrchestratorService', () => {
   let createReviewComment: jest.Mock;
   let paginate: jest.Mock;
   let deleteReviewComment: jest.Mock;
-  let installationTokenManager: { getOctokit: jest.Mock };
+  let installationTokenManager: {
+    getOctokit: jest.Mock;
+    getScopedToken: jest.Mock;
+  };
   let reviewJobContextStore: { get: jest.Mock };
   let reviewCommentFindingStore: { set: jest.Mock };
   let primaryReviewStore: { get: jest.Mock; set: jest.Mock; delete: jest.Mock };
@@ -69,6 +72,7 @@ describe('ReviewOrchestratorService', () => {
         },
         paginate,
       }),
+      getScopedToken: jest.fn(),
     };
     reviewJobContextStore = { get: jest.fn().mockResolvedValue(context) };
     reviewCommentFindingStore = { set: jest.fn().mockResolvedValue(undefined) };

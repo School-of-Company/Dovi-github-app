@@ -113,7 +113,7 @@ describe('WebhookService', () => {
         draft: false,
         title: 'PR 제목',
         body: 'PR 본문',
-        head: { sha: 'sha' },
+        head: { sha: 'sha', repo: { id: 1, full_name: 'owner/repo' } },
         base: { sha: 'base-sha' },
       },
       comment: {
@@ -296,7 +296,7 @@ describe('WebhookService', () => {
         draft: false,
         title: 'PR 제목',
         body: 'PR 본문',
-        head: { sha: 'sha' },
+        head: { sha: 'sha', repo: { id: 1, full_name: 'owner/repo' } },
         base: { sha: 'base-sha' },
       },
       repository: { id: 1, full_name: 'owner/repo', default_branch: 'main' },

@@ -23,7 +23,10 @@ describe('PrDataCollectorService', () => {
   let pullsGet: jest.Mock;
   let getTree: jest.Mock;
   let octokit: unknown;
-  let installationTokenManager: { getOctokit: jest.Mock };
+  let installationTokenManager: {
+    getOctokit: jest.Mock;
+    getScopedToken: jest.Mock;
+  };
   let service: PrDataCollectorService;
 
   beforeEach(() => {
@@ -46,6 +49,7 @@ describe('PrDataCollectorService', () => {
 
     installationTokenManager = {
       getOctokit: jest.fn().mockResolvedValue(octokit),
+      getScopedToken: jest.fn(),
     };
 
     service = new PrDataCollectorService(installationTokenManager);
