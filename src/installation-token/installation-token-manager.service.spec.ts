@@ -103,6 +103,19 @@ describe('InstallationTokenManagerService', () => {
     );
   });
 
+  it('permissions/repositoryIds가 빈 객체/배열이면 appAuth 호출에서 아예 생략한다 (전체 권한/전체 저장소 유지)', async () => {
+    appAuthMock.mockResolvedValue({
+      token: 'tok-empty-scope',
+      expiresAt: expiresInSeconds(3600),
+    });
+
+    await service.getScopedToken(1, { permissions: {}, repositoryIds: [] });
+
+    const [callArgs] = appAuthMock.mock.calls[0] as [Record<string, unknown>];
+    expect(callArgs).not.toHaveProperty('permissions');
+    expect(callArgs).not.toHaveProperty('repositoryIds');
+  });
+
   it('스코프가 다르면 전체 권한 토큰(getOctokit) 캐시를 오염시키지 않는다', async () => {
     appAuthMock.mockResolvedValue({
       token: 'scoped-tok',

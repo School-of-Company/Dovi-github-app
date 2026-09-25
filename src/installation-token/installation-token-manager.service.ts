@@ -62,8 +62,16 @@ export class InstallationTokenManagerService implements InstallationTokenManager
       this.appAuth({
         type: 'installation',
         installationId,
-        ...(scope?.permissions ? { permissions: scope.permissions } : {}),
-        ...(scope?.repositoryIds ? { repositoryIds: scope.repositoryIds } : {}),
+        // 빈 객체/배열도 truthy이므로 length까지 확인한다 — GitHub의 installation
+        // access token 발급 API는 permissions/repositoryIds 키 자체를 생략해야
+        // "설치 시점의 전체 권한/전체 저장소"로 대체되고, 빈 값을 명시적으로
+        // 보내면 "권한/저장소 없음"으로 해석될 수 있다.
+        ...(scope?.permissions && Object.keys(scope.permissions).length > 0
+          ? { permissions: scope.permissions }
+          : {}),
+        ...(scope?.repositoryIds && scope.repositoryIds.length > 0
+          ? { repositoryIds: scope.repositoryIds }
+          : {}),
       }),
     );
 
