@@ -8,6 +8,7 @@ import type { RepoIndexDispatcherService } from '../repo-index/repo-index-dispat
 import type { ReviewFeedbackDispatcherService } from '../review-feedback/review-feedback-dispatcher.service';
 import type { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import type { ReviewReactionService } from '../review-reaction/review-reaction.service';
+import type { SandboxProbeDispatcherService } from '../sandbox-probe/sandbox-probe-dispatcher.service';
 import type { GithubWebhookPayload } from './dto/github-webhook-payload';
 import type { ReviewRequestPayload } from '../pr-data-collector/dto/review-request.payload';
 import type { ThreadComment } from '../comment-answer/dto/comment-answer-request.payload';
@@ -56,6 +57,7 @@ describe('WebhookService', () => {
     notifyReviewCommentInProgress: jest.Mock;
     notifyIssueCommentInProgress: jest.Mock;
   };
+  let sandboxProbeDispatcherService: { notifyPrOpened: jest.Mock };
   let service: WebhookService;
 
   beforeEach(() => {
@@ -86,6 +88,7 @@ describe('WebhookService', () => {
       notifyReviewCommentInProgress: jest.fn(),
       notifyIssueCommentInProgress: jest.fn(),
     };
+    sandboxProbeDispatcherService = { notifyPrOpened: jest.fn() };
 
     service = new WebhookService(
       prDataCollector as unknown as PrDataCollectorService,
@@ -97,6 +100,7 @@ describe('WebhookService', () => {
       reviewFeedbackDispatcher as unknown as ReviewFeedbackDispatcherService,
       reviewCommentFindingStore as unknown as ReviewCommentFindingStore,
       reviewReactionService as unknown as ReviewReactionService,
+      sandboxProbeDispatcherService as unknown as SandboxProbeDispatcherService,
     );
   });
 
@@ -315,6 +319,46 @@ describe('WebhookService', () => {
       'owner',
       'repo',
       1,
+    );
+  });
+
+  it('PR 이벤트마다 메인 리뷰와 독립적으로 샌드박스 프로브 발행 여부를 검토한다', async () => {
+    service.handle('pull_request', pullRequestPayload());
+    await flush();
+
+    expect(sandboxProbeDispatcherService.notifyPrOpened).toHaveBeenCalledWith(
+      expect.objectContaining({
+        installationId: 10,
+        owner: 'owner',
+        repo: 'repo',
+        repositoryId: 1,
+        defaultBranch: 'main',
+        prNumber: 1,
+        headSha: 'sha',
+        baseSha: 'base-sha',
+        isFork: false,
+      }),
+    );
+  });
+
+  it('fork PR이면 isFork: true로 샌드박스 프로브 발행 검토를 넘긴다', async () => {
+    service.handle(
+      'pull_request',
+      pullRequestPayload({
+        pull_request: {
+          number: 1,
+          draft: false,
+          title: 'PR 제목',
+          body: 'PR 본문',
+          head: { sha: 'sha', repo: { id: 999, full_name: 'someone/fork' } },
+          base: { sha: 'base-sha' },
+        },
+      }),
+    );
+    await flush();
+
+    expect(sandboxProbeDispatcherService.notifyPrOpened).toHaveBeenCalledWith(
+      expect.objectContaining({ isFork: true }),
     );
   });
 
