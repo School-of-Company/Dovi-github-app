@@ -8,6 +8,7 @@ import { CommentAnswerModule } from '../comment-answer/comment-answer.module';
 import { RepoIndexModule } from '../repo-index/repo-index.module';
 import { ReviewFeedbackModule } from '../review-feedback/review-feedback.module';
 import { ReviewReactionModule } from '../review-reaction/review-reaction.module';
+import { SandboxProbeModule } from '../sandbox-probe/sandbox-probe.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { ReviewReactionModule } from '../review-reaction/review-reaction.module'
     RepoIndexModule,
     ReviewFeedbackModule,
     ReviewReactionModule,
+    SandboxProbeModule,
   ],
   controllers: [WebhookController],
   providers: [WebhookSignatureGuard, WebhookService],
