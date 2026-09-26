@@ -7,6 +7,7 @@ import { CommentAnswerContextStore } from './comment-answer-context.store';
 import { ReviewCommentFindingStore } from './review-comment-finding.store';
 import { PrimaryReviewStore } from './primary-review.store';
 import { SandboxProbeJobContextStore } from './sandbox-probe-job-context.store';
+import { SandboxProbeStickyCommentStore } from './sandbox-probe-sticky-comment.store';
 import { REDIS_CLIENT } from './redis.constants';
 
 @Global()
@@ -33,6 +34,7 @@ import { REDIS_CLIENT } from './redis.constants';
     ReviewCommentFindingStore,
     PrimaryReviewStore,
     SandboxProbeJobContextStore,
+    SandboxProbeStickyCommentStore,
   ],
   exports: [
     REDIS_CLIENT,
@@ -43,6 +45,7 @@ import { REDIS_CLIENT } from './redis.constants';
     ReviewCommentFindingStore,
     PrimaryReviewStore,
     SandboxProbeJobContextStore,
+    SandboxProbeStickyCommentStore,
   ],
 })
 export class RedisModule {}

@@ -202,6 +202,7 @@ describe('SandboxProbeDispatcherService', () => {
         prNumber: 5,
         headSha: 'head-sha',
         baseSha: 'base-sha',
+        installationId: 10,
       },
       expectedReviewJobId,
     );

@@ -113,6 +113,7 @@ export class SandboxProbeDispatcherService {
       prNumber: trigger.prNumber,
       headSha: trigger.headSha,
       baseSha: trigger.baseSha,
+      installationId: trigger.installationId,
     };
 
     try {

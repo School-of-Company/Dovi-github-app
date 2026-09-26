@@ -80,6 +80,39 @@ describe('SandboxProbeResultConsumerService', () => {
     expect(responder.handle).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['status가 유효하지 않으면', { status: 'unknown' }],
+    ['evidence가 문자열이 아니면', { evidence: undefined }],
+    ['findings가 배열이 아니면', { findings: undefined }],
+    [
+      'findings 항목이 깨져 있으면',
+      { findings: [{ title: 't', message: 'm' }] },
+    ],
+  ])(
+    '%s PoisonMessageError를 던지고 formatter까지 도달하지 않는다',
+    async (_label, overrides) => {
+      const payload = {
+        reviewJobId: '1:5:sha',
+        repositoryId: 1,
+        prNumber: 5,
+        headSha: 'sha',
+        status: 'passed',
+        evidence: '',
+        findings: [],
+        ...overrides,
+      };
+      const message = { value: Buffer.from(JSON.stringify(payload)) };
+
+      await expect(
+        (service as unknown as ConsumerWithHandleMessage).handleMessage(
+          completedTopic,
+          message,
+        ),
+      ).rejects.toBeInstanceOf(PoisonMessageError);
+      expect(responder.handle).not.toHaveBeenCalled();
+    },
+  );
+
   it('알 수 없는 토픽은 responder를 호출하지 않고 스킵한다', async () => {
     const message = { value: Buffer.from('{}') };
 
