@@ -9,6 +9,7 @@ import type { ReviewFeedbackDispatcherService } from '../review-feedback/review-
 import type { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import type { ReviewReactionService } from '../review-reaction/review-reaction.service';
 import type { SandboxProbeDispatcherService } from '../sandbox-probe/sandbox-probe-dispatcher.service';
+import type { DicoshotService } from 'dicoshot-nest';
 import type { GithubWebhookPayload } from './dto/github-webhook-payload';
 import type { ReviewRequestPayload } from '../pr-data-collector/dto/review-request.payload';
 import type { ThreadComment } from '../comment-answer/dto/comment-answer-request.payload';
@@ -58,6 +59,7 @@ describe('WebhookService', () => {
     notifyIssueCommentInProgress: jest.Mock;
   };
   let sandboxProbeDispatcherService: { notifyPrOpened: jest.Mock };
+  let dicoshot: { sendCustom: jest.Mock };
   let service: WebhookService;
 
   beforeEach(() => {
@@ -89,6 +91,7 @@ describe('WebhookService', () => {
       notifyIssueCommentInProgress: jest.fn(),
     };
     sandboxProbeDispatcherService = { notifyPrOpened: jest.fn() };
+    dicoshot = { sendCustom: jest.fn().mockResolvedValue(undefined) };
 
     service = new WebhookService(
       prDataCollector as unknown as PrDataCollectorService,
@@ -101,6 +104,7 @@ describe('WebhookService', () => {
       reviewCommentFindingStore as unknown as ReviewCommentFindingStore,
       reviewReactionService as unknown as ReviewReactionService,
       sandboxProbeDispatcherService as unknown as SandboxProbeDispatcherService,
+      dicoshot as unknown as DicoshotService,
     );
   });
 
@@ -362,6 +366,29 @@ describe('WebhookService', () => {
     );
   });
 
+  it('PR 데이터 수집이 실패하면 Discord로 실패를 알린다', async () => {
+    prDataCollector.collect.mockRejectedValue(new Error('connect timeout'));
+
+    service.handle('pull_request', pullRequestPayload());
+    await flush();
+
+    expect(dicoshot.sendCustom).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '리뷰 트리거 실패', color: 'danger' }),
+    );
+    const call = dicoshot.sendCustom.mock.calls[0] as [{ description: string }];
+    expect(call[0].description).toContain('owner/repo#1');
+  });
+
+  it('Discord 알림 전송 자체가 실패해도 예외를 던지지 않는다', async () => {
+    prDataCollector.collect.mockRejectedValue(new Error('connect timeout'));
+    dicoshot.sendCustom.mockRejectedValue(new Error('discord down'));
+
+    service.handle('pull_request', pullRequestPayload());
+    await flush();
+
+    expect(dicoshot.sendCustom).toHaveBeenCalled();
+  });
+
   function issueCommentPayload(
     overrides: Partial<GithubWebhookPayload> = {},
   ): GithubWebhookPayload {
@@ -468,6 +495,19 @@ describe('WebhookService', () => {
     await flush();
 
     expect(prDataCollector.collectByPrNumber).not.toHaveBeenCalled();
+  });
+
+  it('/dovi review 재실행이 실패하면 Discord로 실패를 알린다', async () => {
+    prDataCollector.collectByPrNumber.mockRejectedValue(
+      new Error('connect timeout'),
+    );
+
+    service.handle('issue_comment', issueCommentPayload());
+    await flush();
+
+    expect(dicoshot.sendCustom).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '리뷰 트리거 실패', color: 'danger' }),
+    );
   });
 
   function pushPayload(
