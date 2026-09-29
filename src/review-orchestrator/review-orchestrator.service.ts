@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DicoshotService } from 'dicoshot-nest';
 import type { CustomMessageOptions } from 'dicoshot-nest';
 import type { Octokit } from '@octokit/rest';
-import { isClientError } from '../common/http-error';
+import { isClientError, isGoneError } from '../common/http-error';
 import { withRetry } from '../common/retry';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
@@ -56,8 +56,11 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     }
 
     if ('reason' in payload) {
-      await this.notifyFailure(payload, context);
-      await this.reviewFailureNotice.notify(context, payload);
+      // 둘 다 예외를 던지지 않고 서로 독립적이라 함께 보낸다.
+      await Promise.all([
+        this.notifyFailure(payload, context),
+        this.reviewFailureNotice.notify(context, payload),
+      ]);
       return;
     }
 
@@ -173,7 +176,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         }),
       );
     } catch (err) {
-      if (!this.isDeadReview(err)) throw err;
+      if (!isGoneError(err)) throw err;
 
       // 저장된 review id가 GitHub에서 삭제/dismiss된 경우(404/410) 계속 같은
       // 오류를 반복하며 이 PR이 영영 리뷰를 못 받는 대신, 기록을 지우고 새 리뷰를
@@ -318,10 +321,6 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     }
   }
 
-  private isDeadReview(err: unknown): boolean {
-    return isClientError(err) && (err.status === 404 || err.status === 410);
-  }
-
   private async notifyFailure(
     payload: ReviewFailedPayload,
     context: ReviewJobContext,
@@ -331,7 +330,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       description:
         `${context.owner}/${context.repo}#${context.prNumber} ` +
         `(reviewJobId=${payload.reviewJobId}) reason=${payload.reason} ` +
-        `(${REASON_DESCRIPTIONS[payload.reason]})`,
+        `(${REASON_DESCRIPTIONS[payload.reason] ?? '알 수 없는 사유'})`,
       color: 'danger',
     });
   }

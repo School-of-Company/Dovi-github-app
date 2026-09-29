@@ -12,6 +12,8 @@ describe('ReviewFailureNoticeService', () => {
   let createComment: jest.Mock;
   let updateComment: jest.Mock;
   let deleteComment: jest.Mock;
+  let paginate: jest.Mock;
+  let pullsGet: jest.Mock;
   let installationTokenManager: { getOctokit: jest.Mock };
   let store: { get: jest.Mock; set: jest.Mock; delete: jest.Mock };
   let service: ReviewFailureNoticeService;
@@ -35,9 +37,22 @@ describe('ReviewFailureNoticeService', () => {
     createComment = jest.fn().mockResolvedValue({ data: { id: 500 } });
     updateComment = jest.fn().mockResolvedValue({ data: { id: 500 } });
     deleteComment = jest.fn().mockResolvedValue(undefined);
+    paginate = jest.fn().mockResolvedValue([]);
+    pullsGet = jest.fn().mockResolvedValue({
+      data: { state: 'open', head: { sha: 'abcdef1234' } },
+    });
     installationTokenManager = {
       getOctokit: jest.fn().mockResolvedValue({
-        rest: { issues: { createComment, updateComment, deleteComment } },
+        paginate,
+        rest: {
+          pulls: { get: pullsGet },
+          issues: {
+            createComment,
+            updateComment,
+            deleteComment,
+            listComments: jest.fn(),
+          },
+        },
       }),
     };
     store = {
@@ -53,6 +68,27 @@ describe('ReviewFailureNoticeService', () => {
   });
 
   describe('notify', () => {
+    it('실패한 커밋이 이미 PR의 최신 head가 아니면 안내하지 않는다', async () => {
+      pullsGet.mockResolvedValue({
+        data: { state: 'open', head: { sha: 'newer-sha' } },
+      });
+
+      await service.notify(context, failed('timeout'));
+
+      expect(createComment).not.toHaveBeenCalled();
+      expect(updateComment).not.toHaveBeenCalled();
+    });
+
+    it('PR이 이미 닫혔으면 안내하지 않는다', async () => {
+      pullsGet.mockResolvedValue({
+        data: { state: 'closed', head: { sha: 'abcdef1234' } },
+      });
+
+      await service.notify(context, failed('context_overflow'));
+
+      expect(createComment).not.toHaveBeenCalled();
+    });
+
     it('기존 안내가 없으면 PR에 코멘트를 새로 달고 id를 저장한다', async () => {
       await service.notify(context, failed('context_overflow'));
 
@@ -106,6 +142,23 @@ describe('ReviewFailureNoticeService', () => {
         expect.objectContaining({ comment_id: 42 }),
       );
       expect(createComment).not.toHaveBeenCalled();
+      // 갱신할 때도 TTL을 늘려 오래 실패하는 PR에서 기록이 만료되지 않게 한다.
+      expect(store.set).toHaveBeenCalledWith('owner', 'repo', 7, 42);
+    });
+
+    it('id 기록이 없어도 마커가 달린 기존 안내가 있으면 그 코멘트를 갱신한다', async () => {
+      paginate.mockResolvedValue([
+        { id: 1, body: '다른 코멘트' },
+        { id: 99, body: '<!-- dovi:review-failure -->\n이전 안내' },
+      ]);
+
+      await service.notify(context, failed('timeout'));
+
+      expect(updateComment).toHaveBeenCalledWith(
+        expect.objectContaining({ comment_id: 99 }),
+      );
+      expect(createComment).not.toHaveBeenCalled();
+      expect(store.set).toHaveBeenCalledWith('owner', 'repo', 7, 99);
     });
 
     it('저장된 코멘트가 삭제됐으면(404) 새로 만든다', async () => {
