@@ -10,6 +10,7 @@ import { ReviewJobContextStore } from '../redis/review-job-context.store';
 import type { ReviewJobContext } from '../redis/review-job-context.type';
 import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import { PrimaryReviewStore } from '../redis/primary-review.store';
+import { ReviewFailureNoticeService } from './review-failure-notice.service';
 import {
   buildReviewComments,
   formatReviewSummary,
@@ -40,6 +41,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     private readonly reviewCommentFindingStore: ReviewCommentFindingStore,
     private readonly primaryReviewStore: PrimaryReviewStore,
     private readonly dicoshot: DicoshotService,
+    private readonly reviewFailureNotice: ReviewFailureNoticeService,
   ) {}
 
   async handle(
@@ -55,6 +57,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
 
     if ('reason' in payload) {
       await this.notifyFailure(payload, context);
+      await this.reviewFailureNotice.notify(context, payload);
       return;
     }
 
@@ -90,6 +93,9 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
           formattedComments,
         );
       }
+
+      // 이전 push에서 실패해 남긴 안내 코멘트는 리뷰가 성공했으니 더 이상 맞지 않는다.
+      await this.reviewFailureNotice.clear(context);
     } catch (err) {
       await this.notifyOrchestratorError(payload, context, err);
 
