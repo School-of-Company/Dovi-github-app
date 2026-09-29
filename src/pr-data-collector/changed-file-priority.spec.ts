@@ -40,6 +40,13 @@ describe('sortByReviewPriority', () => {
     'tests/conftest.py',
     'src/__tests__/foo.ts',
     'spec/models/user_spec.rb',
+    'src/app.e2e-spec.ts',
+    'lib/models/user_spec.rb',
+    'app/src/main/kotlin/FooServiceTest.kt',
+    'core/FooSpec.kt',
+    'Sources/AppTests.swift',
+    'src/__fixtures__/big.json',
+    'pkg/parser/testdata/input.txt',
   ])('%s는 테스트로 분류한다', (filePath) => {
     const sorted = sortByReviewPriority(toFiles([filePath, 'src/main.ts']));
 
@@ -62,6 +69,8 @@ describe('sortByReviewPriority', () => {
     'Dockerfile',
     '.github/workflows/ci.yml',
     'src/testing-utils.ts',
+    'src/latest.java',
+    'src/contest.kt',
   ])(
     '%s는 소스/설정으로 분류한다 (이름에 test가 들어가도 패턴이 아니면 소스)',
     (filePath) => {
@@ -72,4 +81,43 @@ describe('sortByReviewPriority', () => {
       expect(paths(sorted)).toEqual([filePath, 'src/foo.spec.ts']);
     },
   );
+
+  it.each([
+    'CLAUDE.md',
+    'AGENTS.md',
+    'skills/review/SKILL.md',
+    '.claude/agents/reviewer.md',
+    '.github/copilot-instructions.md',
+  ])(
+    '%s는 확장자가 .md여도 에이전트 지시 파일이라 소스/설정으로 분류한다',
+    (filePath) => {
+      const sorted = sortByReviewPriority(
+        toFiles(['src/foo.spec.ts', filePath]),
+      );
+
+      expect(paths(sorted)).toEqual([filePath, 'src/foo.spec.ts']);
+    },
+  );
+
+  it.each(['api/openapi.spec.yaml', 'contracts/order.test.json'])(
+    '%s는 이름에 spec/test가 있어도 데이터 파일이라 소스/설정으로 분류한다',
+    (filePath) => {
+      const sorted = sortByReviewPriority(
+        toFiles(['src/foo.spec.ts', filePath]),
+      );
+
+      expect(paths(sorted)).toEqual([filePath, 'src/foo.spec.ts']);
+    },
+  );
+
+  it('픽스처 디렉터리 안의 데이터 파일은 여전히 테스트로 분류한다', () => {
+    const sorted = sortByReviewPriority(
+      toFiles(['test/fixtures/order.spec.json', 'src/main.ts']),
+    );
+
+    expect(paths(sorted)).toEqual([
+      'src/main.ts',
+      'test/fixtures/order.spec.json',
+    ]);
+  });
 });
