@@ -19,6 +19,16 @@ import type { ReviewOrchestrator } from './review-orchestrator.interface';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
 
+// ai-server의 FailureReason과 1:1 대응하는 사람이 읽을 설명. Discord 알림에서
+// reason 코드만 봐서는 뭐가 문제인지 바로 안 와닿아서 함께 보여준다.
+const REASON_DESCRIPTIONS: Record<ReviewFailedPayload['reason'], string> = {
+  parse_error: 'LLM 응답 파싱 실패',
+  timeout: 'AI 서버 처리 시간 초과',
+  server_error: 'AI 서버 내부 오류',
+  context_overflow: 'PR이 너무 커서 컨텍스트에 담을 수 없음',
+  output_truncated: 'AI 출력이 잘려 복구도 실패',
+};
+
 @Injectable()
 export class ReviewOrchestratorService implements ReviewOrchestrator {
   private readonly logger = new Logger(ReviewOrchestratorService.name);
@@ -312,7 +322,10 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
   ): Promise<void> {
     await this.safeNotify({
       title: 'AI 리뷰 분석 실패',
-      description: `${context.owner}/${context.repo}#${context.prNumber} (reviewJobId=${payload.reviewJobId}) reason=${payload.reason}`,
+      description:
+        `${context.owner}/${context.repo}#${context.prNumber} ` +
+        `(reviewJobId=${payload.reviewJobId}) reason=${payload.reason} ` +
+        `(${REASON_DESCRIPTIONS[payload.reason]})`,
       color: 'danger',
     });
   }

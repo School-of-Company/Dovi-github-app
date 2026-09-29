@@ -110,6 +110,21 @@ describe('ReviewOrchestratorService', () => {
     );
   });
 
+  it.each([
+    ['context_overflow', 'PR이 너무 커서 컨텍스트에 담을 수 없음'],
+    ['output_truncated', 'AI 출력이 잘려 복구도 실패'],
+  ] as const)(
+    'reason이 %s면 Discord 알림 설명에 사람이 읽을 문구를 포함한다',
+    async (reason, expectedText) => {
+      await service.handle({ ...failedPayload, reason });
+
+      const call = dicoshot.sendCustom.mock.calls[0] as [
+        { description: string },
+      ];
+      expect(call[0].description).toContain(expectedText);
+    },
+  );
+
   it('reviews가 빈 배열이면 summary만 담아 빈 comments로 createReview를 호출한다', async () => {
     await service.handle(completedPayload);
 
