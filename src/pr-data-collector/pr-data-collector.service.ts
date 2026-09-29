@@ -263,7 +263,8 @@ export class PrDataCollectorService {
     );
     if (droppedContent.length > 0) {
       this.logger.warn(
-        `PR #${prNumber} changedFiles content 예산 초과, ` +
+        `PR #${prNumber} changedFiles content 예산(${CHANGED_FILE_CONTENT_TOTAL_BUDGET} bytes) 또는 ` +
+          `총합(content+patch) 상한(${CHANGED_FILE_TOTAL_BUDGET} bytes) 초과, ` +
           `${droppedContent.length}개 파일 content 제외 (hunk만 전송): ${droppedContent.join(', ')}`,
       );
     }

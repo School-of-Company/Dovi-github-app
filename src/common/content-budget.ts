@@ -31,36 +31,41 @@ export function enforceContentBudget<T extends BudgetedFile>(
   contentBudgetBytes: number,
   totalBudgetBytes = Number.POSITIVE_INFINITY,
 ): BudgetResult {
-  const sum = (field: 'content' | 'patch') =>
-    files.reduce((acc, file) => acc + byteLength(file[field]), 0);
-
-  let contentTotal = sum('content');
-  let patchTotal = sum('patch');
+  type Field = 'content' | 'patch';
+  // 바이트 길이는 파일당 한 번만 계산한다 (정렬 비교마다 큰 문자열을 다시 스캔하지 않도록).
+  const sized = files.map((file) => ({
+    file,
+    content: byteLength(file.content),
+    patch: byteLength(file.patch),
+  }));
+  const totals: Record<Field, number> = {
+    content: sized.reduce((acc, s) => acc + s.content, 0),
+    patch: sized.reduce((acc, s) => acc + s.patch, 0),
+  };
 
   const dropLargestFirst = (
-    field: 'content' | 'patch',
+    field: Field,
     isWithinBudget: () => boolean,
   ): string[] => {
+    if (isWithinBudget()) return [];
     const dropped: string[] = [];
-    const candidates = files
-      .filter((file) => file[field] !== undefined)
-      .sort((a, b) => byteLength(b[field]) - byteLength(a[field]));
-    for (const file of candidates) {
+    const candidates = sized
+      .filter((s) => s.file[field] !== undefined)
+      .sort((a, b) => b[field] - a[field]);
+    for (const s of candidates) {
       if (isWithinBudget()) break;
-      const size = byteLength(file[field]);
-      if (field === 'content') contentTotal -= size;
-      else patchTotal -= size;
-      file[field] = undefined;
-      dropped.push(file.filePath);
+      totals[field] -= s[field];
+      s.file[field] = undefined;
+      dropped.push(s.file.filePath);
     }
     return dropped;
   };
 
-  const withinTotal = () => contentTotal + patchTotal <= totalBudgetBytes;
+  const withinTotal = () => totals.content + totals.patch <= totalBudgetBytes;
 
   const droppedContent = dropLargestFirst(
     'content',
-    () => contentTotal <= contentBudgetBytes && withinTotal(),
+    () => totals.content <= contentBudgetBytes && withinTotal(),
   );
   const droppedPatch = dropLargestFirst('patch', withinTotal);
 
