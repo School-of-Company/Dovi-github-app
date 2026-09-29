@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { DicoshotModule } from 'dicoshot-nest';
 import { WebhookController } from './webhook.controller';
 import { WebhookSignatureGuard } from './guards/webhook-signature.guard';
 import { WebhookService } from './webhook.service';
@@ -19,6 +20,10 @@ import { SandboxProbeModule } from '../sandbox-probe/sandbox-probe.module';
     ReviewFeedbackModule,
     ReviewReactionModule,
     SandboxProbeModule,
+    DicoshotModule.register({
+      webhookUrl: process.env.DISCORD_WEBHOOK_URL ?? '',
+      applicationName: 'dovi-github-app',
+    }),
   ],
   controllers: [WebhookController],
   providers: [WebhookSignatureGuard, WebhookService],

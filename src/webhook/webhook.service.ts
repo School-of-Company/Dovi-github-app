@@ -1,4 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { DicoshotService } from 'dicoshot-nest';
+import type { CustomMessageOptions } from 'dicoshot-nest';
 import { PrDataCollectorService } from '../pr-data-collector/pr-data-collector.service';
 import { ReviewDispatcherService } from '../review-dispatcher/review-dispatcher.service';
 import { CommentAnswerCollectorService } from '../comment-answer/comment-answer-collector.service';
@@ -35,6 +37,7 @@ export class WebhookService {
     private readonly reviewCommentFindingStore: ReviewCommentFindingStore,
     private readonly reviewReactionService: ReviewReactionService,
     private readonly sandboxProbeDispatcherService: SandboxProbeDispatcherService,
+    private readonly dicoshot: DicoshotService,
   ) {}
 
   handle(event: string, payload: GithubWebhookPayload): void {
@@ -111,10 +114,12 @@ export class WebhookService {
         });
       })
       .catch((err: unknown) => {
+        const prNumber = payload.pull_request!.number;
         this.logger.error(
-          `PR 데이터 수집/리뷰 발행 실패 (PR #${payload.pull_request!.number})`,
+          `PR 데이터 수집/리뷰 발행 실패 (PR #${prNumber})`,
           err,
         );
+        this.notifyCollectionFailure('PR 리뷰', owner, repo, prNumber, err);
       });
   }
 
@@ -196,6 +201,13 @@ export class WebhookService {
           `멘션 답글 재리뷰 실패 (comment #${comment.id})`,
           err,
         );
+        this.notifyCollectionFailure(
+          '멘션 답글 재리뷰',
+          owner,
+          repo,
+          pr.number,
+          err,
+        );
       });
   }
 
@@ -245,6 +257,7 @@ export class WebhookService {
           `코멘트 스레드 Q&A 발행 실패 (comment #${comment.id})`,
           err,
         );
+        this.notifyCollectionFailure('코멘트 Q&A', owner, repo, pr.number, err);
       });
   }
 
@@ -336,6 +349,13 @@ export class WebhookService {
       })
       .catch((err: unknown) => {
         this.logger.error(`/dovi review 재실행 실패 (PR #${prNumber})`, err);
+        this.notifyCollectionFailure(
+          '/dovi review',
+          owner,
+          repo,
+          prNumber,
+          err,
+        );
       });
   }
 
@@ -458,5 +478,33 @@ export class WebhookService {
       return null;
     }
     return [parts[0], parts[1]];
+  }
+
+  // 웹훅 수신 직후 리액션(👀)은 이미 달렸는데 그 뒤 수집/발행이 조용히 실패하면,
+  // 사용자 입장에선 "반응은 했는데 리뷰가 영원히 안 오는" 상태로 남아 아무도
+  // 알아채지 못한다. 재시도로도 못 넘긴 실패는 Discord로 눈에 띄게 알린다.
+  private notifyCollectionFailure(
+    stage: string,
+    owner: string,
+    repo: string,
+    prNumber: number,
+    err: unknown,
+  ): void {
+    void this.safeNotify({
+      title: '리뷰 트리거 실패',
+      description:
+        `${owner}/${repo}#${prNumber} (${stage}): ` +
+        `${err instanceof Error ? err.message : String(err)}\n` +
+        `PR에 @dovi-code-assist 멘션하면 재시도됩니다.`,
+      color: 'danger',
+    });
+  }
+
+  private async safeNotify(message: CustomMessageOptions): Promise<void> {
+    try {
+      await this.dicoshot.sendCustom(message);
+    } catch (notifyErr) {
+      this.logger.warn('Discord 알림 전송 실패', notifyErr);
+    }
   }
 }
