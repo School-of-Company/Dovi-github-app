@@ -4,6 +4,7 @@ import type { ReviewJobContextStore } from '../redis/review-job-context.store';
 import type { ReviewJobContext } from '../redis/review-job-context.type';
 import type { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import type { PrimaryReviewStore } from '../redis/primary-review.store';
+import type { ReviewFailureNoticeService } from './review-failure-notice.service';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
 
@@ -25,6 +26,7 @@ describe('ReviewOrchestratorService', () => {
   let reviewCommentFindingStore: { set: jest.Mock };
   let primaryReviewStore: { get: jest.Mock; set: jest.Mock; delete: jest.Mock };
   let dicoshot: { sendCustom: jest.Mock };
+  let reviewFailureNotice: { notify: jest.Mock; clear: jest.Mock };
   let service: ReviewOrchestratorService;
 
   const context: ReviewJobContext = {
@@ -82,6 +84,10 @@ describe('ReviewOrchestratorService', () => {
       delete: jest.fn().mockResolvedValue(undefined),
     };
     dicoshot = { sendCustom: jest.fn() };
+    reviewFailureNotice = {
+      notify: jest.fn().mockResolvedValue(undefined),
+      clear: jest.fn().mockResolvedValue(undefined),
+    };
 
     service = new ReviewOrchestratorService(
       installationTokenManager,
@@ -89,6 +95,7 @@ describe('ReviewOrchestratorService', () => {
       reviewCommentFindingStore as unknown as ReviewCommentFindingStore,
       primaryReviewStore as unknown as PrimaryReviewStore,
       dicoshot as unknown as DicoshotService,
+      reviewFailureNotice as unknown as ReviewFailureNoticeService,
     );
   });
 
@@ -101,13 +108,33 @@ describe('ReviewOrchestratorService', () => {
     expect(dicoshot.sendCustom).not.toHaveBeenCalled();
   });
 
-  it('failed payload는 GitHub API를 호출하지 않고 Discord 알림만 보낸다', async () => {
+  it('failed payload는 리뷰를 등록하지 않고 Discord 알림 + PR 실패 안내를 보낸다', async () => {
     await service.handle(failedPayload);
 
-    expect(installationTokenManager.getOctokit).not.toHaveBeenCalled();
+    expect(createReview).not.toHaveBeenCalled();
     expect(dicoshot.sendCustom).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'AI 리뷰 분석 실패', color: 'danger' }),
     );
+    expect(reviewFailureNotice.notify).toHaveBeenCalledWith(
+      context,
+      failedPayload,
+    );
+    expect(reviewFailureNotice.clear).not.toHaveBeenCalled();
+  });
+
+  it('리뷰 등록에 성공하면 이전 실패 안내 코멘트를 정리한다', async () => {
+    await service.handle(completedPayload);
+
+    expect(createReview).toHaveBeenCalled();
+    expect(reviewFailureNotice.clear).toHaveBeenCalledWith(context);
+  });
+
+  it('리뷰 등록 자체가 실패하면 실패 안내 코멘트를 정리하지 않는다', async () => {
+    createReview.mockRejectedValue(makeHttpError(422));
+
+    await service.handle(completedPayload);
+
+    expect(reviewFailureNotice.clear).not.toHaveBeenCalled();
   });
 
   it.each([

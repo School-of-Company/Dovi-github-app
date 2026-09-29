@@ -6,6 +6,7 @@ import { withRetry } from '../common/retry';
 import { isSecretPath } from '../common/secret-path';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
+import { sortByReviewPriority } from './changed-file-priority';
 import type { CollectPrDataCommand } from './dto/collect-pr-data.command';
 import type {
   ChangedFile,
@@ -263,7 +264,7 @@ export class PrDataCollectorService {
       );
     }
 
-    return changedFiles;
+    return sortByReviewPriority(changedFiles);
   }
 
   private async fetchContextFiles(
