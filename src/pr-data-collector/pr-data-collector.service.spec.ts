@@ -210,6 +210,35 @@ describe('PrDataCollectorService', () => {
     expect(byPath.get('src/d.ts')).toHaveLength(100 * 1024);
   });
 
+  it('patch 총합이 768KB 상한을 넘으면 큰 patch부터 비우되 파일 항목은 남긴다', async () => {
+    // .md는 AST 미지원이라 content를 조회하지 않는다 → patch만으로 상한을 넘기는 상황.
+    const patchSizes: Record<string, number> = {
+      'docs/a.md': 300 * 1024,
+      'docs/b.md': 250 * 1024,
+      'docs/c.md': 200 * 1024,
+      'docs/d.md': 150 * 1024,
+      'docs/e.md': 100 * 1024,
+    };
+    mockChangedFiles(
+      Object.entries(patchSizes).map(([filename, size]) => ({
+        filename,
+        status: 'modified',
+        patch: 'p'.repeat(size),
+      })),
+    );
+
+    const result = await service.collect(command);
+    const byPath = new Map(
+      result?.changedFiles.map((f) => [f.filePath, f.patch]),
+    );
+
+    // 300+250+200+150+100 = 1000KB > 768KB → 가장 큰 a.md(300KB)만 비우면 700KB.
+    expect(result?.changedFiles).toHaveLength(5);
+    expect(byPath.get('docs/a.md')).toBeUndefined();
+    expect(byPath.get('docs/b.md')).toHaveLength(250 * 1024);
+    expect(byPath.get('docs/e.md')).toHaveLength(100 * 1024);
+  });
+
   it('getContent 조회가 실패하면 content 없이 나머지 필드는 그대로 반환한다', async () => {
     mockChangedFiles([
       { filename: 'src/foo.ts', status: 'modified', patch: '@@ -1 +1 @@' },
