@@ -46,6 +46,11 @@ export class SandboxProbeResponderService {
     );
 
     try {
+      // 워커가 도는 동안(최대 15분) 새 커밋이 푸시되면 이 결과는 더 이상 PR의 현재
+      // 코드에 대한 게 아니다. 새 커밋의 결과가 먼저 도착해 sticky 코멘트를 갱신했을
+      // 수도 있어, 오래된 결과로 덮어쓰지 않도록 게시하지 않는다(#49 계약).
+      if (await this.isStale(octokit, context, payload)) return;
+
       await this.upsertStickyComment(octokit, context, payload);
     } catch (err) {
       await this.notifyError(payload, context, err);
@@ -131,6 +136,26 @@ export class SandboxProbeResponderService {
       payload.prNumber,
       created.id,
     );
+  }
+
+  private async isStale(
+    octokit: Octokit,
+    context: SandboxProbeJobContext,
+    payload: SandboxProbeCompletedPayload,
+  ): Promise<boolean> {
+    const { data: pr } = await withRetry(() =>
+      octokit.rest.pulls.get({
+        owner: context.owner,
+        repo: context.repo,
+        pull_number: context.prNumber,
+      }),
+    );
+    if (pr.head.sha === payload.headSha) return false;
+
+    this.logger.log(
+      `최신 커밋이 아닌 결과라 샌드박스 프로브 코멘트 생략: ${context.owner}/${context.repo}#${context.prNumber} (result=${payload.headSha}, head=${pr.head.sha})`,
+    );
+    return true;
   }
 
   private isDeletedComment(err: unknown): boolean {

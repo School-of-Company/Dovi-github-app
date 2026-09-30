@@ -15,6 +15,7 @@ describe('SandboxProbeResponderService', () => {
   let updateComment: jest.Mock;
   let listComments: jest.Mock;
   let paginate: jest.Mock;
+  let pullsGet: jest.Mock;
   let installationTokenManager: {
     getOctokit: jest.Mock;
     getScopedToken: jest.Mock;
@@ -50,9 +51,13 @@ describe('SandboxProbeResponderService', () => {
     updateComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
     listComments = jest.fn();
     paginate = jest.fn().mockResolvedValue([]);
+    pullsGet = jest.fn().mockResolvedValue({ data: { head: { sha: 'sha' } } });
     installationTokenManager = {
       getOctokit: jest.fn().mockResolvedValue({
-        rest: { issues: { createComment, updateComment, listComments } },
+        rest: {
+          issues: { createComment, updateComment, listComments },
+          pulls: { get: pullsGet },
+        },
         paginate,
       }),
       getScopedToken: jest.fn(),
@@ -71,6 +76,24 @@ describe('SandboxProbeResponderService', () => {
       sandboxProbeStickyCommentStore as unknown as SandboxProbeStickyCommentStore,
       dicoshot as unknown as DicoshotService,
     );
+  });
+
+  it('결과의 headSha가 PR의 현재 head와 다르면 게시하지 않는다', async () => {
+    pullsGet.mockResolvedValue({ data: { head: { sha: 'newer-sha' } } });
+    sandboxProbeStickyCommentStore.get.mockResolvedValue(77);
+
+    await service.handle(completedPayload);
+
+    expect(createComment).not.toHaveBeenCalled();
+    expect(updateComment).not.toHaveBeenCalled();
+  });
+
+  it('PR head 조회가 5xx로 실패하면 재시도되도록 예외를 다시 던진다', async () => {
+    const error = makeHttpError(502);
+    pullsGet.mockRejectedValue(error);
+
+    await expect(service.handle(completedPayload)).rejects.toBe(error);
+    expect(createComment).not.toHaveBeenCalled();
   });
 
   it('job context가 없으면 아무 것도 하지 않고 스킵한다', async () => {
