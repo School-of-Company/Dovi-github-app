@@ -168,7 +168,9 @@ github-app → ai-server. 메인 리뷰 발행 경로와 완전히 독립된 경
 - 인증: 헤더 `X-Dovi-Internal-Secret` = 양쪽 공유 시크릿(github-app `GITHUB_APP_INTERNAL_SECRET`, 워커 VM `GITHUB_APP_INTERNAL_SECRET`). 불일치 401, github-app에 시크릿 미설정 시 503
 - 요청: `{ "installationId": number, "repositoryId": number }` (양의 정수, 아니면 400)
 - 응답: `{ "token": string, "expiresAt": string }` — `contents: read`, `repositories: [repositoryId]`로 좁힌 토큰. 스코프별 캐시 키를 써서 메인 리뷰용 전체 권한 토큰 캐시와 섞이지 않는다
-- GitHub가 발급을 거부하면(installation 없음, 저장소가 installation에 속하지 않음) 422, GitHub 5xx·네트워크 오류는 500(워커가 재시도)
+- GitHub가 발급 대상을 거부하면(404/422/403 — installation 없음, 저장소가 installation에 속하지 않음 등) 422. GitHub 5xx·네트워크 오류·레이트 리밋(429, 레이트 리밋 403)·401(github-app 쪽 App 인증 설정 문제)은 500(워커가 재시도)
+- **github-app이 샌드박스 잡을 발행한 (installation, 저장소) 조합에만 발급한다.** 발행 시 Redis(`sandbox-probe:active:{installationId}:{repositoryId}`, TTL 2시간, 새 잡이 발행될 때마다 갱신)에 표시를 남기고, 표시가 없으면 403. 워커 VM은 신뢰할 수 없는 PR 코드를 실행하므로 공유 시크릿이 새더라도 opt-in하지 않은 다른 저장소의 코드는 읽지 못하게 하기 위함
+- 스코프 토큰은 남은 수명이 30분 이상인 것만 내준다(clone이 오래 걸려도 도중에 만료되지 않게). 부족하면 새로 발급한다
 - 토큰 값은 로그에 남기지 않는다
 
 ### `pr.sandbox.probe.completed`

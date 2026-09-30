@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
+import { SandboxProbeJobContextStore } from '../redis/sandbox-probe-job-context.store';
 import { InternalSecretGuard } from './internal-secret.guard';
 import { SandboxProbeTokenController } from './sandbox-probe-token.controller';
 
@@ -17,6 +18,7 @@ function httpError(status: number): Error & { status: number } {
 describe('SandboxProbeTokenController (HTTP)', () => {
   let app: INestApplication<App>;
   let getScopedToken: jest.Mock;
+  let isActiveRepository: jest.Mock;
   let logSpy: jest.SpyInstance;
 
   beforeEach(async () => {
@@ -26,6 +28,8 @@ describe('SandboxProbeTokenController (HTTP)', () => {
       expiresAt: '2026-09-30T12:00:00Z',
     });
 
+    isActiveRepository = jest.fn().mockResolvedValue(true);
+
     const moduleRef = await Test.createTestingModule({
       controllers: [SandboxProbeTokenController],
       providers: [
@@ -33,6 +37,10 @@ describe('SandboxProbeTokenController (HTTP)', () => {
         {
           provide: INSTALLATION_TOKEN_MANAGER,
           useValue: { getOctokit: jest.fn(), getScopedToken },
+        },
+        {
+          provide: SandboxProbeJobContextStore,
+          useValue: { isActiveRepository },
         },
       ],
     }).compile();
@@ -63,6 +71,18 @@ describe('SandboxProbeTokenController (HTTP)', () => {
       permissions: { contents: 'read' },
       repositoryIds: [42],
     });
+  });
+
+  it('github-app이 샌드박스 잡을 발행하지 않은 저장소면 403으로 거부한다', async () => {
+    isActiveRepository.mockResolvedValue(false);
+
+    await request(app.getHttpServer())
+      .post(ROUTE)
+      .set('X-Dovi-Internal-Secret', SECRET)
+      .send({ installationId: 10, repositoryId: 999 })
+      .expect(403);
+    expect(isActiveRepository).toHaveBeenCalledWith(10, 999);
+    expect(getScopedToken).not.toHaveBeenCalled();
   });
 
   it('토큰 값은 로그에 남기지 않는다', async () => {
@@ -107,6 +127,7 @@ describe('SandboxProbeTokenController (HTTP)', () => {
     [{ installationId: '10', repositoryId: 42 }],
     [{ installationId: 10, repositoryId: 0 }],
     [{ installationId: 10, repositoryId: 1.5 }],
+    [{ installationId: 1e20, repositoryId: 42 }],
   ])('요청 본문이 %j이면 400을 돌려준다', async (body) => {
     await request(app.getHttpServer())
       .post(ROUTE)
@@ -125,6 +146,28 @@ describe('SandboxProbeTokenController (HTTP)', () => {
       .send({ installationId: 10, repositoryId: 42 })
       .expect(422);
   });
+
+  it.each([
+    ['429', Object.assign(httpError(429), { response: { headers: {} } })],
+    [
+      '403 + x-ratelimit-remaining: 0',
+      Object.assign(httpError(403), {
+        response: { headers: { 'x-ratelimit-remaining': '0' } },
+      }),
+    ],
+    ['401(App 인증 설정 문제)', httpError(401)],
+  ])(
+    'GitHub %s는 호출자 잘못이 아니므로 422가 아닌 500을 돌려준다',
+    async (_label, err) => {
+      getScopedToken.mockRejectedValue(err);
+
+      await request(app.getHttpServer())
+        .post(ROUTE)
+        .set('X-Dovi-Internal-Secret', SECRET)
+        .send({ installationId: 10, repositoryId: 42 })
+        .expect(500);
+    },
+  );
 
   it('GitHub 5xx나 네트워크 오류는 500으로 돌려준다(워커가 재시도할 수 있게)', async () => {
     getScopedToken.mockRejectedValue(httpError(502));

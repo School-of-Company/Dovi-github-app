@@ -99,12 +99,19 @@ export class SandboxProbeDispatcherService {
       return;
     }
 
-    await this.sandboxProbeJobContextStore.set(reviewJobId, {
-      owner: trigger.owner,
-      repo: trigger.repo,
-      prNumber: trigger.prNumber,
-      installationId: trigger.installationId,
-    });
+    await Promise.all([
+      this.sandboxProbeJobContextStore.set(reviewJobId, {
+        owner: trigger.owner,
+        repo: trigger.repo,
+        prNumber: trigger.prNumber,
+        installationId: trigger.installationId,
+      }),
+      // 워커가 이 잡을 위해 토큰을 요청할 수 있도록 허용 표시를 남긴다.
+      this.sandboxProbeJobContextStore.markActiveRepository(
+        trigger.installationId,
+        trigger.repositoryId,
+      ),
+    ]);
 
     const payload: SandboxProbeRequestPayload = {
       reviewJobId,
