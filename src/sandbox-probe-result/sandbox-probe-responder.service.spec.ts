@@ -103,6 +103,22 @@ describe('SandboxProbeResponderService', () => {
     expect(updateComment).not.toHaveBeenCalled();
   });
 
+  it('레이트 리밋(429)은 4xx여도 일시적이라 포기하지 않고 재전달되도록 예외를 던진다', async () => {
+    const error = makeHttpError(429);
+    pullsGet.mockRejectedValue(error);
+
+    await expect(service.handle(completedPayload)).rejects.toBe(error);
+    expect(createComment).not.toHaveBeenCalled();
+  });
+
+  it('PR head 조회가 일반 4xx(404 등)면 알림 후 포기한다', async () => {
+    pullsGet.mockRejectedValue(makeHttpError(404));
+
+    await expect(service.handle(completedPayload)).resolves.toBeUndefined();
+    expect(dicoshot.sendCustom).toHaveBeenCalled();
+    expect(createComment).not.toHaveBeenCalled();
+  });
+
   it('PR head 조회가 5xx로 실패하면 재시도되도록 예외를 다시 던진다', async () => {
     const error = makeHttpError(502);
     pullsGet.mockRejectedValue(error);

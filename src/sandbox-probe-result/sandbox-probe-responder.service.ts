@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DicoshotService } from 'dicoshot-nest';
 import type { CustomMessageOptions } from 'dicoshot-nest';
 import type { Octokit } from '@octokit/rest';
-import { isClientError } from '../common/http-error';
+import { isClientError, isRateLimitError } from '../common/http-error';
 import { withRetry } from '../common/retry';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
@@ -55,7 +55,9 @@ export class SandboxProbeResponderService {
     } catch (err) {
       await this.notifyError(payload, context, err);
 
-      if (isClientError(err)) {
+      // 레이트 리밋은 4xx여도 일시적이라 포기하지 말고 재전달로 재시도한다. 여기서 삼키면
+      // 커밋된 메시지의 결과가 영영 게시되지 않는다.
+      if (isClientError(err) && !isRateLimitError(err)) {
         this.logger.error(
           `영구적으로 실패한 샌드박스 프로브 코멘트 게시(status=${err.status}), 재시도하지 않고 종료: ${payload.reviewJobId}`,
           err,
