@@ -7,6 +7,7 @@ import { withRetry } from '../common/retry';
 import { REDIS_CLIENT } from '../redis/redis.constants';
 import type {
   InstallationTokenManager,
+  ScopedToken,
   TokenScope,
 } from './installation-token-manager.interface';
 
@@ -39,24 +40,24 @@ export class InstallationTokenManagerService implements InstallationTokenManager
   }
 
   async getOctokit(installationId: number): Promise<Octokit> {
-    const token = await this.fetchToken(installationId);
+    const { token } = await this.fetchToken(installationId);
     return new Octokit({ auth: token, request: { fetch: createTimedFetch() } });
   }
 
   async getScopedToken(
     installationId: number,
     scope: TokenScope,
-  ): Promise<string> {
+  ): Promise<ScopedToken> {
     return this.fetchToken(installationId, scope);
   }
 
   private async fetchToken(
     installationId: number,
     scope?: TokenScope,
-  ): Promise<string> {
+  ): Promise<ScopedToken> {
     const cacheKey = this.tokenKey(installationId, scope);
-    const cachedToken = await this.redis.get(cacheKey);
-    if (cachedToken) return cachedToken;
+    const cached = this.parseCached(await this.redis.get(cacheKey));
+    if (cached) return cached;
 
     const { token, expiresAt } = await withRetry(() =>
       this.appAuth({
@@ -79,10 +80,33 @@ export class InstallationTokenManagerService implements InstallationTokenManager
       Math.floor((Date.parse(expiresAt) - Date.now()) / 1000) -
       TTL_SAFETY_MARGIN_SECONDS;
     if (ttlSeconds > 0) {
-      await this.redis.set(cacheKey, token, 'EX', ttlSeconds);
+      await this.redis.set(
+        cacheKey,
+        JSON.stringify({ token, expiresAt }),
+        'EX',
+        ttlSeconds,
+      );
     }
 
-    return token;
+    return { token, expiresAt };
+  }
+
+  // 이전 버전은 캐시에 토큰 문자열만 저장했다(배포 직후 Redis에 남아 있을 수 있음).
+  // 만료 시각을 알 수 없으므로 캐시 미스로 보고 새로 발급해 덮어쓴다.
+  private parseCached(raw: string | null): ScopedToken | null {
+    if (!raw) return null;
+    try {
+      const value = JSON.parse(raw) as Partial<ScopedToken>;
+      if (
+        typeof value.token === 'string' &&
+        typeof value.expiresAt === 'string'
+      ) {
+        return { token: value.token, expiresAt: value.expiresAt };
+      }
+    } catch {
+      // 예전 형식(평문 토큰) — 아래에서 null 반환
+    }
+    return null;
   }
 
   // 스코프가 다르면 반드시 다른 캐시 키를 써야 한다 — 그러지 않으면 contents:read로
