@@ -150,10 +150,10 @@ export class SandboxProbeResponderService {
         pull_number: context.prNumber,
       }),
     );
-    if (pr.head.sha === payload.headSha) return false;
+    if (pr.state === 'open' && pr.head.sha === payload.headSha) return false;
 
     this.logger.log(
-      `최신 커밋이 아닌 결과라 샌드박스 프로브 코멘트 생략: ${context.owner}/${context.repo}#${context.prNumber} (result=${payload.headSha}, head=${pr.head.sha})`,
+      `최신 커밋이 아니거나 닫힌 PR이라 샌드박스 프로브 코멘트 생략: ${context.owner}/${context.repo}#${context.prNumber} (result=${payload.headSha}, head=${pr.head.sha}, state=${pr.state})`,
     );
     return true;
   }

@@ -51,7 +51,9 @@ describe('SandboxProbeResponderService', () => {
     updateComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
     listComments = jest.fn();
     paginate = jest.fn().mockResolvedValue([]);
-    pullsGet = jest.fn().mockResolvedValue({ data: { head: { sha: 'sha' } } });
+    pullsGet = jest.fn().mockResolvedValue({
+      data: { state: 'open', head: { sha: 'sha' } },
+    });
     installationTokenManager = {
       getOctokit: jest.fn().mockResolvedValue({
         rest: {
@@ -79,8 +81,21 @@ describe('SandboxProbeResponderService', () => {
   });
 
   it('결과의 headSha가 PR의 현재 head와 다르면 게시하지 않는다', async () => {
-    pullsGet.mockResolvedValue({ data: { head: { sha: 'newer-sha' } } });
+    pullsGet.mockResolvedValue({
+      data: { state: 'open', head: { sha: 'newer-sha' } },
+    });
     sandboxProbeStickyCommentStore.get.mockResolvedValue(77);
+
+    await service.handle(completedPayload);
+
+    expect(createComment).not.toHaveBeenCalled();
+    expect(updateComment).not.toHaveBeenCalled();
+  });
+
+  it('PR이 닫혔으면 head가 같아도 게시하지 않는다', async () => {
+    pullsGet.mockResolvedValue({
+      data: { state: 'closed', head: { sha: 'sha' } },
+    });
 
     await service.handle(completedPayload);
 

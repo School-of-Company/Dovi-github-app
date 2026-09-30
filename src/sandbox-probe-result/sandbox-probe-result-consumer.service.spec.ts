@@ -68,6 +68,29 @@ describe('SandboxProbeResultConsumerService', () => {
     expect(responder.handle).not.toHaveBeenCalled();
   });
 
+  it('headSha가 없는 payload는 PoisonMessageError를 던진다', async () => {
+    const message = {
+      value: Buffer.from(
+        JSON.stringify({
+          reviewJobId: '1:5:sha',
+          repositoryId: 1,
+          prNumber: 5,
+          status: 'passed',
+          evidence: '',
+          findings: [],
+        }),
+      ),
+    };
+
+    await expect(
+      (service as unknown as ConsumerWithHandleMessage).handleMessage(
+        completedTopic,
+        message,
+      ),
+    ).rejects.toBeInstanceOf(PoisonMessageError);
+    expect(responder.handle).not.toHaveBeenCalled();
+  });
+
   it('깨진 JSON은 PoisonMessageError를 던진다', async () => {
     const message = { value: Buffer.from('{not-json') };
 
