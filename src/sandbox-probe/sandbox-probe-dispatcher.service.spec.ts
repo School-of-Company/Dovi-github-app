@@ -13,6 +13,7 @@ function notFoundError(): Error & { status: number } {
 function makeOctokit(overrides: {
   doviMd?: string;
   packageJson?: string;
+  buildFiles?: Record<string, string>;
   files?: string[];
 }) {
   const getContent = jest.fn((params: { path: string }) => {
@@ -38,7 +39,18 @@ function makeOctokit(overrides: {
         },
       });
     }
-    throw new Error(`unexpected path: ${params.path}`);
+    const buildFile = overrides.buildFiles?.[params.path];
+    if (buildFile !== undefined) {
+      return Promise.resolve({
+        data: {
+          type: 'file',
+          size: Buffer.byteLength(buildFile, 'utf-8'),
+          content: Buffer.from(buildFile, 'utf-8').toString('base64'),
+        },
+      });
+    }
+    // 스택 감지가 확인하는 그 밖의 빌드 파일(build.gradle, pom.xml 등)은 없는 것으로 본다.
+    throw notFoundError();
   });
 
   const paginate = jest
@@ -85,6 +97,7 @@ describe('SandboxProbeDispatcherService', () => {
 
   beforeEach(() => {
     process.env.SANDBOX_PROBE_PUBLISH_ENABLED = 'true';
+    delete process.env.SANDBOX_PROBE_STACKS;
     process.env.KAFKA_SANDBOX_PROBE_REQUEST_TOPIC =
       'pr.sandbox.probe.requested';
 
@@ -210,6 +223,7 @@ describe('SandboxProbeDispatcherService', () => {
         headSha: 'head-sha',
         baseSha: 'base-sha',
         installationId: 10,
+        stack: 'nestjs',
       },
       expectedReviewJobId,
     );
@@ -247,5 +261,75 @@ describe('SandboxProbeDispatcherService', () => {
     expect(idempotencyStore.release).toHaveBeenCalledWith(
       'sandbox:1:5:head-sha',
     );
+  });
+  describe('스택 감지와 허용 스택', () => {
+    const SPRING_BUILD = {
+      'build.gradle':
+        "plugins { id 'org.springframework.boot' version '3.3.0' }",
+    };
+
+    function sentStack(): unknown {
+      const [, payload] = kafkaProducer.send.mock.calls[0] as [
+        string,
+        { stack: string },
+      ];
+      return payload.stack;
+    }
+
+    it('기본값에서는 NestJS 외 스택(스프링)은 감지돼도 발행하지 않는다', async () => {
+      setOctokit({
+        doviMd: '## Sandbox Probe\ntrue',
+        buildFiles: SPRING_BUILD,
+        files: ['src/main/java/App.java'],
+      });
+
+      service.notifyPrOpened(baseTrigger);
+      await flush();
+
+      expect(kafkaProducer.send).not.toHaveBeenCalled();
+      expect(idempotencyStore.acquire).not.toHaveBeenCalled();
+    });
+
+    it('SANDBOX_PROBE_STACKS에 spring이 있으면 stack=spring으로 발행한다', async () => {
+      process.env.SANDBOX_PROBE_STACKS = 'nestjs,spring';
+      setOctokit({
+        doviMd: '## Sandbox Probe\ntrue',
+        buildFiles: SPRING_BUILD,
+        files: ['src/main/java/App.java'],
+      });
+
+      service.notifyPrOpened(baseTrigger);
+      await flush();
+
+      expect(sentStack()).toBe('spring');
+    });
+
+    it('프론트(react)도 허용하면 stack=react로 발행한다', async () => {
+      process.env.SANDBOX_PROBE_STACKS = 'react';
+      setOctokit({
+        doviMd: '## Sandbox Probe\ntrue',
+        packageJson: JSON.stringify({ dependencies: { react: '^19' } }),
+        files: ['src/App.tsx'],
+      });
+
+      service.notifyPrOpened(baseTrigger);
+      await flush();
+
+      expect(sentStack()).toBe('react');
+    });
+
+    it('알려진 스택이 아니면 허용 목록과 무관하게 발행하지 않는다', async () => {
+      process.env.SANDBOX_PROBE_STACKS = 'nestjs,react,vue,spring,nextjs';
+      setOctokit({
+        doviMd: '## Sandbox Probe\ntrue',
+        packageJson: JSON.stringify({ dependencies: { lodash: '^4' } }),
+        files: ['src/a.js'],
+      });
+
+      service.notifyPrOpened(baseTrigger);
+      await flush();
+
+      expect(kafkaProducer.send).not.toHaveBeenCalled();
+    });
   });
 });
