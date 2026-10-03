@@ -4,6 +4,7 @@ import { enforceContentBudget } from '../common/content-budget';
 import { parseIndexBranch } from '../common/dovi-md';
 import { describeSkipReason, fetchFileContent } from '../common/github-content';
 import { withRetry } from '../common/retry';
+import { maskChangedFiles } from '../common/secret-mask';
 import { isSecretPath } from '../common/secret-path';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
@@ -143,6 +144,14 @@ export class RepoIndexCollectorService {
     if (skipped.length > 0) {
       this.logger.log(
         `${owner}/${repo} 인덱싱 content 제외 ${skipped.length}건: ${skipped.join(', ')}`,
+      );
+    }
+
+    // 인덱싱 content는 임베딩되어 벡터 DB에 저장되므로 시크릿이 영구히 남지 않게 가린다.
+    const masked = maskChangedFiles(changedFiles);
+    if (masked.length > 0) {
+      this.logger.warn(
+        `${owner}/${repo}@${branch} 시크릿 마스킹 ${masked.reduce((sum, r) => sum + r.count, 0)}건: ${masked.map((r) => `${r.filePath}(${r.count})`).join(', ')}`,
       );
     }
 

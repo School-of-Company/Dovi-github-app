@@ -3,6 +3,7 @@ import type { Octokit } from '@octokit/rest';
 import { enforceContentBudget } from '../common/content-budget';
 import { describeSkipReason, fetchFileContent } from '../common/github-content';
 import { withRetry } from '../common/retry';
+import { maskChangedFiles, maskSecrets } from '../common/secret-mask';
 import { isSecretPath } from '../common/secret-path';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
@@ -254,6 +255,15 @@ export class PrDataCollectorService {
       );
     }
 
+    // LLM으로 가기 전에 하드코딩된 시크릿을 가린다. 예산 계산 전에 해야 가려진 길이 기준으로
+    // 맞춰진다. 건수와 파일 경로만 로그에 남기고 값은 절대 남기지 않는다.
+    const masked = maskChangedFiles(changedFiles);
+    if (masked.length > 0) {
+      this.logger.warn(
+        `PR #${prNumber} 시크릿 마스킹 ${masked.reduce((sum, r) => sum + r.count, 0)}건: ${masked.map((r) => `${r.filePath}(${r.count})`).join(', ')}`,
+      );
+    }
+
     // 예산을 넘으면 큰 파일부터 content를 비워 hunk 기반 리뷰로 fallback시킨다
     // (ai-server는 content가 없으면 hunk만으로 리뷰를 진행한다). content+patch
     // 총합이 상한을 넘으면 patch까지 비운다 — 그 파일은 리뷰 대상에서 사실상 빠진다.
@@ -365,6 +375,10 @@ export class PrDataCollectorService {
       return null;
     }
 
-    return { path, content: result.content, source: 'github' };
+    const masked = maskSecrets(result.content);
+    if (masked.count > 0) {
+      this.logger.warn(`컨텍스트 파일 ${path} 시크릿 마스킹 ${masked.count}건`);
+    }
+    return { path, content: masked.text, source: 'github' };
   }
 }
