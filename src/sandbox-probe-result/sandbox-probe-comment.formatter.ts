@@ -27,9 +27,10 @@ function neutralizeMentions(text: string): string {
 }
 
 // 빌드 도구(tsc, nest 등)의 컬러 출력에 섞인 ANSI 이스케이프(`ESC[96m` 등)는 GitHub에서
-// `^[[96m` 같은 깨진 문자로 보이므로 제거한다.
+// 깨진 문자로 보인다. ai-server 워커는 ESC를 `^[` 두 글자(캐럿 표기)로 바꿔 보내므로
+// 실제 ESC 문자와 `^[` 표기를 모두 제거한다.
 // eslint-disable-next-line no-control-regex
-const ANSI_ESCAPE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+const ANSI_ESCAPE = /(?:\u001b|\^\[)\[[0-9;?]*[ -/]*[@-~]/g;
 
 function sanitize(text: string): string {
   return neutralizeMentions(text.replace(ANSI_ESCAPE, ''));

@@ -135,4 +135,19 @@ describe('formatSandboxProbeComment', () => {
     expect(body).toContain('빌드 실패');
     expect(body).toContain('8 return');
   });
+  it('워커가 ESC를 `^[` 두 글자로 바꿔 보낸 ANSI 표기도 제거한다', () => {
+    const body = formatSandboxProbeComment({
+      reviewJobId: '1:1:abcdef1234567',
+      repositoryId: 1,
+      prNumber: 1,
+      headSha: 'abcdef1234567',
+      status: 'found_issue',
+      evidence:
+        '^[[96msrc/a.ts^[[0m:^[[93m8^[[0m - ^[[91merror^[[0m TS2322: Type',
+      findings: [],
+    });
+
+    expect(body).not.toContain('^[');
+    expect(body).toContain('src/a.ts:8 - error TS2322: Type');
+  });
 });
