@@ -12,6 +12,10 @@ export interface GithubWebhookPayload {
     draft: boolean;
     title: string;
     body: string | null;
+    // PR 작성자. 명령 권한 판단(작성자는 항상 허용)에 쓴다.
+    user?: {
+      login: string;
+    };
     head: {
       sha: string;
       // fork PR 판별용. fork 저장소에서 온 PR은 이 repo가 base repository와
@@ -35,6 +39,10 @@ export interface GithubWebhookPayload {
   };
   issue?: {
     number: number;
+    // 이슈(=PR) 작성자.
+    user?: {
+      login: string;
+    };
     pull_request?: {
       url: string;
     };
