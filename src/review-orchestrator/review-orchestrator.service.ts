@@ -371,7 +371,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     }
   }
 
-  // push(synchronize)마다 새 리뷰를 올리다 보면 이전 push에서 남긴 봇 코멘트가
+  // 재리뷰(@멘션, /dovi review)를 반복하다 보면 이전 리뷰에서 남긴 봇 코멘트가
   // 그대로 쌓이므로, 새 리뷰를 올리기 전 봇이 단 이전 최상위 코멘트를 정리한다.
   // 사람이 남긴 답글(in_reply_to_id 존재)은 대화 스레드이므로 건드리지 않는다.
   // 답글은 루트 코멘트에 매달린 구조이므로, 봇이 남긴 루트라도 그 아래에 답글이
