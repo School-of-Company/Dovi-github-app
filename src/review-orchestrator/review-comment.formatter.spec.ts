@@ -72,6 +72,58 @@ describe('buildReviewComments', () => {
       expect(result).toContain('**[major] 제목**');
     });
 
+    it('긴 경로 대신 파일명:줄만 보여 주고 해당 커밋의 그 줄로 가는 링크를 건다', () => {
+      const result = appendUnanchoredFindings(
+        'body',
+        [
+          {
+            path: 'src/main/java/com/example/order/OrderService.java',
+            line: 57,
+            body: '설명',
+          },
+        ],
+        { owner: 'org', repo: 'repo', sha: 'abc123' },
+      );
+
+      expect(result).toContain(
+        '#### [`OrderService.java:57`](https://github.com/org/repo/blob/abc123/src/main/java/com/example/order/OrderService.java#L57)',
+      );
+      expect(result).not.toContain('#### `src/main');
+    });
+
+    it('경로의 특수문자는 링크에서 인코딩한다', () => {
+      const result = appendUnanchoredFindings(
+        'body',
+        [{ path: 'docs/가이드 문서.md', line: 3, body: 'x' }],
+        { owner: 'org', repo: 'repo', sha: 'abc' },
+      );
+
+      expect(result).toContain(
+        '/blob/abc/docs/%EA%B0%80%EC%9D%B4%EB%93%9C%20%EB%AC%B8%EC%84%9C.md#L3',
+      );
+    });
+
+    it('같은 파일명이 서로 다른 경로에 있으면 상위 디렉터리를 붙여 구분한다', () => {
+      const result = appendUnanchoredFindings('body', [
+        { path: 'src/a/index.ts', line: 1, body: 'x' },
+        { path: 'src/b/index.ts', line: 2, body: 'y' },
+        { path: 'src/c/main.ts', line: 3, body: 'z' },
+      ]);
+
+      expect(result).toContain('#### `a/index.ts:1`');
+      expect(result).toContain('#### `b/index.ts:2`');
+      expect(result).toContain('#### `main.ts:3`');
+    });
+
+    it('링크 기준이 없으면 링크 없이 파일명:줄만 표시한다', () => {
+      const result = appendUnanchoredFindings('body', [
+        { path: 'src/a.ts', line: 9, body: 'x' },
+      ]);
+
+      expect(result).toContain('#### `a.ts:9`');
+      expect(result).not.toContain('https://');
+    });
+
     it('10건까지만 싣고 나머지는 "외 N건"으로 표기한다', () => {
       const findings = Array.from({ length: 13 }, (_, i) => ({
         path: `f${i}.ts`,

@@ -89,6 +89,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       const reviewBody = appendUnanchoredFindings(
         formatReviewSummary(payload.summary),
         demoted,
+        { owner: context.owner, repo: context.repo, sha: payload.headSha },
       );
       const existingReviewId = await this.primaryReviewStore.get(
         payload.repositoryId,
@@ -340,7 +341,11 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         repo: context.repo,
         pull_number: payload.prNumber,
         review_id: reviewId,
-        body: appendUnanchoredFindings(body, unanchored),
+        body: appendUnanchoredFindings(body, unanchored, {
+          owner: context.owner,
+          repo: context.repo,
+          sha: payload.headSha,
+        }),
       }),
     );
   }
