@@ -82,6 +82,11 @@ export class SandboxProbeResultConsumerService
         'Invalid sandbox probe completed payload: reviewJobId is missing',
       );
     }
+    if (typeof payload.headSha !== 'string' || !payload.headSha) {
+      throw new PoisonMessageError(
+        `Invalid sandbox probe completed payload: headSha is missing (${payload.reviewJobId})`,
+      );
+    }
     if (!VALID_STATUSES.has(payload.status)) {
       throw new PoisonMessageError(
         `Invalid sandbox probe completed payload: unknown status "${String(payload.status)}" (${payload.reviewJobId})`,

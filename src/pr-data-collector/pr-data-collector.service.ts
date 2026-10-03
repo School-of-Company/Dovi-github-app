@@ -53,6 +53,9 @@ const CHANGED_FILE_CONTENT_SIZE_LIMIT = 200 * 1024;
 // changedFiles[].content 총합에 두는 예산. 파일 하나당 최대 200KB라 파일 수가 많은
 // PR은 개별 상한만으로는 부족하다.
 const CHANGED_FILE_CONTENT_TOTAL_BUDGET = 512 * 1024;
+// content + patch 총합 상한. patch는 content 예산에 안 잡혀서 파일 수가 많은 PR은
+// patch만으로 메시지 크기를 넘길 수 있다. contextFiles/메타데이터 몫을 남겨 둔다.
+const CHANGED_FILE_TOTAL_BUDGET = 768 * 1024;
 
 function hasAstSupportedExtension(path: string): boolean {
   const dot = path.lastIndexOf('.');
@@ -252,15 +255,24 @@ export class PrDataCollectorService {
     }
 
     // 예산을 넘으면 큰 파일부터 content를 비워 hunk 기반 리뷰로 fallback시킨다
-    // (ai-server는 content가 없으면 hunk만으로 리뷰를 진행한다).
-    const dropped = enforceContentBudget(
+    // (ai-server는 content가 없으면 hunk만으로 리뷰를 진행한다). content+patch
+    // 총합이 상한을 넘으면 patch까지 비운다 — 그 파일은 리뷰 대상에서 사실상 빠진다.
+    const { droppedContent, droppedPatch } = enforceContentBudget(
       changedFiles,
       CHANGED_FILE_CONTENT_TOTAL_BUDGET,
+      CHANGED_FILE_TOTAL_BUDGET,
     );
-    if (dropped.length > 0) {
+    if (droppedContent.length > 0) {
       this.logger.warn(
-        `PR #${prNumber} changedFiles content 예산(${CHANGED_FILE_CONTENT_TOTAL_BUDGET} bytes) 초과, ` +
-          `${dropped.length}개 파일 content 제외 (hunk만 전송): ${dropped.join(', ')}`,
+        `PR #${prNumber} changedFiles content 예산(${CHANGED_FILE_CONTENT_TOTAL_BUDGET} bytes) 또는 ` +
+          `총합(content+patch) 상한(${CHANGED_FILE_TOTAL_BUDGET} bytes) 초과, ` +
+          `${droppedContent.length}개 파일 content 제외 (hunk만 전송): ${droppedContent.join(', ')}`,
+      );
+    }
+    if (droppedPatch.length > 0) {
+      this.logger.warn(
+        `PR #${prNumber} changedFiles 총합(content+patch) 상한(${CHANGED_FILE_TOTAL_BUDGET} bytes) 초과, ` +
+          `${droppedPatch.length}개 파일 patch까지 제외 (리뷰 대상에서 빠짐): ${droppedPatch.join(', ')}`,
       );
     }
 

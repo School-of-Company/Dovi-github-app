@@ -146,7 +146,7 @@ export class RepoIndexCollectorService {
       );
     }
 
-    const dropped = enforceContentBudget(
+    const { droppedContent: dropped } = enforceContentBudget(
       changedFiles,
       FILE_CONTENT_TOTAL_BUDGET,
     );

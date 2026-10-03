@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DicoshotService } from 'dicoshot-nest';
 import type { CustomMessageOptions } from 'dicoshot-nest';
 import type { Octokit } from '@octokit/rest';
-import { isClientError } from '../common/http-error';
+import { isClientError, isRateLimitError } from '../common/http-error';
 import { withRetry } from '../common/retry';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
@@ -46,11 +46,18 @@ export class SandboxProbeResponderService {
     );
 
     try {
+      // 워커가 도는 동안(최대 15분) 새 커밋이 푸시되면 이 결과는 더 이상 PR의 현재
+      // 코드에 대한 게 아니다. 새 커밋의 결과가 먼저 도착해 sticky 코멘트를 갱신했을
+      // 수도 있어, 오래된 결과로 덮어쓰지 않도록 게시하지 않는다(#49 계약).
+      if (await this.isStale(octokit, context, payload)) return;
+
       await this.upsertStickyComment(octokit, context, payload);
     } catch (err) {
       await this.notifyError(payload, context, err);
 
-      if (isClientError(err)) {
+      // 레이트 리밋은 4xx여도 일시적이라 포기하지 말고 재전달로 재시도한다. 여기서 삼키면
+      // 커밋된 메시지의 결과가 영영 게시되지 않는다.
+      if (isClientError(err) && !isRateLimitError(err)) {
         this.logger.error(
           `영구적으로 실패한 샌드박스 프로브 코멘트 게시(status=${err.status}), 재시도하지 않고 종료: ${payload.reviewJobId}`,
           err,
@@ -131,6 +138,26 @@ export class SandboxProbeResponderService {
       payload.prNumber,
       created.id,
     );
+  }
+
+  private async isStale(
+    octokit: Octokit,
+    context: SandboxProbeJobContext,
+    payload: SandboxProbeCompletedPayload,
+  ): Promise<boolean> {
+    const { data: pr } = await withRetry(() =>
+      octokit.rest.pulls.get({
+        owner: context.owner,
+        repo: context.repo,
+        pull_number: context.prNumber,
+      }),
+    );
+    if (pr.state === 'open' && pr.head.sha === payload.headSha) return false;
+
+    this.logger.log(
+      `최신 커밋이 아니거나 닫힌 PR이라 샌드박스 프로브 코멘트 생략: ${context.owner}/${context.repo}#${context.prNumber} (result=${payload.headSha}, head=${pr.head.sha}, state=${pr.state})`,
+    );
+    return true;
   }
 
   private isDeletedComment(err: unknown): boolean {
