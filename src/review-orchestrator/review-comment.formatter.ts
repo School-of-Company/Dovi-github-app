@@ -17,6 +17,8 @@ export function formatReviewSummary(summary: string): string {
 
 // GitHub 리뷰 body 상한(65,536자)에 여유를 둔 값.
 const REVIEW_BODY_MAX_CHARS = 60000;
+// 본문에 싣는 위치 불명 지적사항 개수 상한. 넘는 건 "외 N건"으로만 표기한다.
+const MAX_UNANCHORED_FINDINGS = 10;
 
 // AI가 diff 범위 밖의 줄을 가리켜 인라인 코멘트로 달 수 없었던 finding(GitHub 422)을
 // 리뷰 본문 끝에 모아 붙인다. finding 하나가 거부당해도 리뷰 전체를 잃지 않고
@@ -27,14 +29,18 @@ export function appendUnanchoredFindings(
 ): string {
   if (findings.length === 0) return body;
 
-  const items = findings
+  const shown = findings.slice(0, MAX_UNANCHORED_FINDINGS);
+  const omitted = findings.length - shown.length;
+
+  const items = shown
     .map(({ path, line, body: findingBody }) => {
       return `#### \`${path}:${line}\`\n\n${findingBody}`;
     })
     .join('\n\n---\n\n');
+  const omittedNote = omitted > 0 ? `\n\n외 ${omitted}건` : '';
   const appended =
     `${body}\n\n---\n\n### 위치를 특정할 수 없는 지적사항\n\n` +
-    `PR diff 범위 밖의 줄을 가리켜 인라인 코멘트로 달 수 없어 본문에 모았습니다.\n\n${items}`;
+    `diff에서 정확한 줄을 찾지 못해 인라인으로 달지 못했습니다. 줄 번호가 다를 수 있습니다.\n\n${items}${omittedNote}`;
 
   return appended.length > REVIEW_BODY_MAX_CHARS
     ? `${appended.slice(0, REVIEW_BODY_MAX_CHARS)}\n\n…(길이 제한으로 일부 생략)`
