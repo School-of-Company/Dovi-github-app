@@ -8,6 +8,7 @@ import { InstallationTokenModule } from './installation-token/installation-token
 import { ReviewResultConsumerModule } from './review-result-consumer/review-result-consumer.module';
 import { CommentAnswerResultModule } from './comment-answer-result/comment-answer-result.module';
 import { SandboxProbeResultModule } from './sandbox-probe-result/sandbox-probe-result.module';
+import { InternalApiModule } from './internal-api/internal-api.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { SandboxProbeResultModule } from './sandbox-probe-result/sandbox-probe-r
     ReviewResultConsumerModule,
     CommentAnswerResultModule,
     SandboxProbeResultModule,
+    InternalApiModule,
   ],
   controllers: [AppController],
   providers: [AppService],

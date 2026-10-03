@@ -49,21 +49,59 @@ describe('InstallationTokenManagerService', () => {
       expect.objectContaining({ type: 'installation', installationId: 1 }),
     );
     expect(redis.set).toHaveBeenCalledWith(
-      'github:token:1',
-      'tok-1',
+      'github:token:v2:1',
+      expect.any(String),
       'EX',
       expect.any(Number),
     );
+    const cachedValue = JSON.parse(redis.set.mock.calls[0][1]) as {
+      token: string;
+      expiresAt: string;
+    };
+    expect(cachedValue.token).toBe('tok-1');
+    expect(typeof cachedValue.expiresAt).toBe('string');
     const ttl = redis.set.mock.calls[0][3];
     expect(ttl).toBeLessThan(3600);
     expect(ttl).toBeGreaterThan(0);
   });
 
   it('캐시 히트면 appAuth를 호출하지 않는다', async () => {
-    redis.get.mockResolvedValue('cached-token');
+    redis.get.mockResolvedValue(
+      JSON.stringify({
+        token: 'cached-token',
+        expiresAt: expiresInSeconds(3000),
+      }),
+    );
 
     await service.getOctokit(1);
 
+    expect(appAuthMock).not.toHaveBeenCalled();
+  });
+
+  it('이전 형식(평문 토큰) 캐시는 만료 시각을 몰라 새로 발급해 덮어쓴다', async () => {
+    redis.get.mockResolvedValue('ghs_legacyPlainToken');
+    appAuthMock.mockResolvedValue({
+      token: 'tok-new',
+      expiresAt: expiresInSeconds(3600),
+    });
+
+    await service.getOctokit(1);
+
+    expect(appAuthMock).toHaveBeenCalled();
+    expect(JSON.parse(redis.set.mock.calls[0][1])).toMatchObject({
+      token: 'tok-new',
+    });
+  });
+
+  it('getScopedToken은 캐시 히트여도 만료 시각을 함께 돌려준다', async () => {
+    const expiresAt = expiresInSeconds(3000);
+    redis.get.mockResolvedValue(JSON.stringify({ token: 'scoped', expiresAt }));
+
+    const result = await service.getScopedToken(1, {
+      permissions: { contents: 'read' },
+    });
+
+    expect(result).toEqual({ token: 'scoped', expiresAt });
     expect(appAuthMock).not.toHaveBeenCalled();
   });
 
@@ -73,9 +111,9 @@ describe('InstallationTokenManagerService', () => {
       expiresAt: expiresInSeconds(60),
     });
 
-    const token = await service.getScopedToken(1, { permissions: {} });
+    const result = await service.getScopedToken(1, { permissions: {} });
 
-    expect(token).toBe('short-lived');
+    expect(result.token).toBe('short-lived');
     expect(redis.set).not.toHaveBeenCalled();
   });
 
@@ -99,7 +137,7 @@ describe('InstallationTokenManagerService', () => {
       }),
     );
     expect(redis.get).toHaveBeenCalledWith(
-      'github:token:1:contents:read:10,20',
+      'github:token:v2:1:contents:read:10,20',
     );
   });
 
@@ -116,6 +154,46 @@ describe('InstallationTokenManagerService', () => {
     expect(callArgs).not.toHaveProperty('repositoryIds');
   });
 
+  it('스코프 토큰의 남은 수명이 30분 미만이면(auth-app 메모리 캐시) refresh로 새로 발급받는다', async () => {
+    appAuthMock
+      .mockResolvedValueOnce({
+        token: 'stale',
+        expiresAt: expiresInSeconds(600),
+      })
+      .mockResolvedValueOnce({
+        token: 'fresh',
+        expiresAt: expiresInSeconds(3600),
+      });
+
+    const result = await service.getScopedToken(1, {
+      permissions: { contents: 'read' },
+      repositoryIds: [42],
+    });
+
+    expect(result.token).toBe('fresh');
+    expect(appAuthMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ refresh: true }),
+    );
+    // 캐시 TTL은 최소 남은 수명(30분)만큼 줄여 잡는다 → 캐시에서 꺼낸 토큰도 30분 이상 남음.
+    const ttl = redis.set.mock.calls[0][3];
+    expect(ttl).toBeLessThanOrEqual(3600 - 30 * 60);
+    expect(ttl).toBeGreaterThan(0);
+  });
+
+  it('전체 권한 토큰(getOctokit)은 refresh 없이 기존대로 쓴다', async () => {
+    appAuthMock.mockResolvedValue({
+      token: 'tok',
+      expiresAt: expiresInSeconds(600),
+    });
+
+    await service.getOctokit(1);
+
+    expect(appAuthMock).toHaveBeenCalledTimes(1);
+    expect(appAuthMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ refresh: true }),
+    );
+  });
+
   it('스코프가 다르면 전체 권한 토큰(getOctokit) 캐시를 오염시키지 않는다', async () => {
     appAuthMock.mockResolvedValue({
       token: 'scoped-tok',
@@ -127,6 +205,6 @@ describe('InstallationTokenManagerService', () => {
 
     const keysUsed = redis.get.mock.calls.map((call) => call[0]);
     expect(new Set(keysUsed).size).toBe(2);
-    expect(keysUsed).toContain('github:token:1');
+    expect(keysUsed).toContain('github:token:v2:1');
   });
 });

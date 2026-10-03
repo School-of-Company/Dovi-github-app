@@ -64,7 +64,10 @@ const NESTJS_PACKAGE_JSON = JSON.stringify({
 describe('SandboxProbeDispatcherService', () => {
   let installationTokenManager: { getOctokit: jest.Mock };
   let idempotencyStore: { acquire: jest.Mock; release: jest.Mock };
-  let sandboxProbeJobContextStore: { set: jest.Mock };
+  let sandboxProbeJobContextStore: {
+    set: jest.Mock;
+    markActiveRepository: jest.Mock;
+  };
   let kafkaProducer: { send: jest.Mock };
   let service: SandboxProbeDispatcherService;
 
@@ -91,6 +94,7 @@ describe('SandboxProbeDispatcherService', () => {
     };
     sandboxProbeJobContextStore = {
       set: jest.fn().mockResolvedValue(undefined),
+      markActiveRepository: jest.fn().mockResolvedValue(undefined),
     };
     kafkaProducer = { send: jest.fn().mockResolvedValue(undefined) };
     installationTokenManager = { getOctokit: jest.fn() };
@@ -193,6 +197,9 @@ describe('SandboxProbeDispatcherService', () => {
       expectedReviewJobId,
       { owner: 'owner', repo: 'repo', prNumber: 5, installationId: 10 },
     );
+    expect(
+      sandboxProbeJobContextStore.markActiveRepository,
+    ).toHaveBeenCalledWith(10, 1);
     expect(kafkaProducer.send).toHaveBeenCalledWith(
       'pr.sandbox.probe.requested',
       {
@@ -221,6 +228,9 @@ describe('SandboxProbeDispatcherService', () => {
 
     expect(sandboxProbeJobContextStore.set).not.toHaveBeenCalled();
     expect(kafkaProducer.send).not.toHaveBeenCalled();
+    expect(
+      sandboxProbeJobContextStore.markActiveRepository,
+    ).not.toHaveBeenCalled();
   });
 
   it('Kafka 발행 실패 시 idempotency 점유를 되돌린다', async () => {

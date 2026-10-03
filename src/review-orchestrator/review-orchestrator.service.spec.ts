@@ -4,6 +4,7 @@ import type { ReviewJobContextStore } from '../redis/review-job-context.store';
 import type { ReviewJobContext } from '../redis/review-job-context.type';
 import type { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import type { PrimaryReviewStore } from '../redis/primary-review.store';
+import type { ReviewFailureNoticeService } from './review-failure-notice.service';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
 
@@ -25,6 +26,7 @@ describe('ReviewOrchestratorService', () => {
   let reviewCommentFindingStore: { set: jest.Mock };
   let primaryReviewStore: { get: jest.Mock; set: jest.Mock; delete: jest.Mock };
   let dicoshot: { sendCustom: jest.Mock };
+  let reviewFailureNotice: { notify: jest.Mock; clear: jest.Mock };
   let service: ReviewOrchestratorService;
 
   const context: ReviewJobContext = {
@@ -82,6 +84,10 @@ describe('ReviewOrchestratorService', () => {
       delete: jest.fn().mockResolvedValue(undefined),
     };
     dicoshot = { sendCustom: jest.fn() };
+    reviewFailureNotice = {
+      notify: jest.fn().mockResolvedValue(undefined),
+      clear: jest.fn().mockResolvedValue(undefined),
+    };
 
     service = new ReviewOrchestratorService(
       installationTokenManager,
@@ -89,6 +95,7 @@ describe('ReviewOrchestratorService', () => {
       reviewCommentFindingStore as unknown as ReviewCommentFindingStore,
       primaryReviewStore as unknown as PrimaryReviewStore,
       dicoshot as unknown as DicoshotService,
+      reviewFailureNotice as unknown as ReviewFailureNoticeService,
     );
   });
 
@@ -101,13 +108,33 @@ describe('ReviewOrchestratorService', () => {
     expect(dicoshot.sendCustom).not.toHaveBeenCalled();
   });
 
-  it('failed payload는 GitHub API를 호출하지 않고 Discord 알림만 보낸다', async () => {
+  it('failed payload는 리뷰를 등록하지 않고 Discord 알림 + PR 실패 안내를 보낸다', async () => {
     await service.handle(failedPayload);
 
-    expect(installationTokenManager.getOctokit).not.toHaveBeenCalled();
+    expect(createReview).not.toHaveBeenCalled();
     expect(dicoshot.sendCustom).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'AI 리뷰 분석 실패', color: 'danger' }),
     );
+    expect(reviewFailureNotice.notify).toHaveBeenCalledWith(
+      context,
+      failedPayload,
+    );
+    expect(reviewFailureNotice.clear).not.toHaveBeenCalled();
+  });
+
+  it('리뷰 등록에 성공하면 이전 실패 안내 코멘트를 정리한다', async () => {
+    await service.handle(completedPayload);
+
+    expect(createReview).toHaveBeenCalled();
+    expect(reviewFailureNotice.clear).toHaveBeenCalledWith(context);
+  });
+
+  it('리뷰 등록 자체가 실패하면 실패 안내 코멘트를 정리하지 않는다', async () => {
+    createReview.mockRejectedValue(makeHttpError(422));
+
+    await service.handle(completedPayload);
+
+    expect(reviewFailureNotice.clear).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -359,6 +386,115 @@ describe('ReviewOrchestratorService', () => {
 
     await expect(service.handle(completedPayload)).resolves.toBeUndefined();
     expect(createReview).toHaveBeenCalled();
+  });
+
+  describe('인라인 코멘트가 diff 밖 줄을 가리켜 GitHub가 422로 거부하는 경우', () => {
+    const twoFindings: ReviewCompletedPayload = {
+      ...completedPayload,
+      reviews: [
+        {
+          severity: 'major',
+          confidence: 0.8,
+          filePath: 'a.ts',
+          line: 1,
+          title: 'valid',
+          message: 'msg-valid',
+          evidence: [],
+        },
+        {
+          severity: 'major',
+          confidence: 0.8,
+          filePath: 'b.spec.ts',
+          line: 109,
+          title: 'outside-diff',
+          message: 'msg-outside-diff',
+          evidence: [],
+        },
+      ],
+    };
+
+    it('첫 리뷰: 본문만으로 리뷰를 만들고, 달 수 있는 건 인라인으로, 못 다는 건 본문에 모은다', async () => {
+      createReview
+        .mockRejectedValueOnce(makeHttpError(422))
+        .mockResolvedValueOnce({ data: { id: 900 } });
+      createReviewComment
+        .mockResolvedValueOnce({ data: { id: 111 } })
+        .mockRejectedValueOnce(makeHttpError(422));
+
+      await expect(service.handle(twoFindings)).resolves.toBeUndefined();
+
+      // 2번째 createReview는 인라인 코멘트 없이 본문만 담는다
+      expect(createReview).toHaveBeenCalledTimes(2);
+      const secondCall = createReview.mock.calls[1] as [
+        { comments: unknown[] },
+      ];
+      expect(secondCall[0].comments).toEqual([]);
+      expect(primaryReviewStore.set).toHaveBeenCalledWith(1, 1, 900);
+      // 유효한 finding은 인라인으로 게시되고 반영 추적 매핑이 저장된다
+      expect(reviewCommentFindingStore.set).toHaveBeenCalledWith(111, {
+        reviewJobId: twoFindings.reviewJobId,
+        findingIndex: 0,
+      });
+      // 못 단 finding은 본문에 합쳐진다
+      expect(updateReview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          review_id: 900,
+          body: expect.stringContaining('`b.spec.ts:109`') as string,
+        }),
+      );
+      // 실패로 취급하지 않는다
+      expect(dicoshot.sendCustom).not.toHaveBeenCalled();
+    });
+
+    it('이미 봇 리뷰가 있는 PR: 거부된 finding만 본문에 모으고 나머지는 그대로 게시한다', async () => {
+      primaryReviewStore.get.mockResolvedValue(555);
+      createReviewComment
+        .mockRejectedValueOnce(makeHttpError(422))
+        .mockResolvedValueOnce({ data: { id: 222 } });
+
+      await expect(service.handle(twoFindings)).resolves.toBeUndefined();
+
+      expect(createReviewComment).toHaveBeenCalledTimes(2);
+      expect(reviewCommentFindingStore.set).toHaveBeenCalledWith(222, {
+        reviewJobId: twoFindings.reviewJobId,
+        findingIndex: 1,
+      });
+      expect(updateReview).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          review_id: 555,
+          body: expect.stringContaining('`a.ts:1`') as string,
+        }),
+      );
+      expect(dicoshot.sendCustom).not.toHaveBeenCalled();
+    });
+
+    it('모든 finding이 달리면 본문을 추가로 갱신하지 않는다', async () => {
+      primaryReviewStore.get.mockResolvedValue(555);
+
+      await service.handle(twoFindings);
+
+      // 본문 갱신은 기존 리뷰 body 갱신 1회뿐
+      expect(updateReview).toHaveBeenCalledTimes(1);
+    });
+
+    it('422가 아닌 에러(5xx)는 전환하지 않고 그대로 던진다', async () => {
+      primaryReviewStore.get.mockResolvedValue(555);
+      const error = makeHttpError(500);
+      createReviewComment.mockRejectedValue(error);
+
+      await expect(service.handle(twoFindings)).rejects.toBe(error);
+    });
+
+    it('finding이 없는데 422면(커밋 불일치 등) 전환하지 않고 기존처럼 실패 처리한다', async () => {
+      createReview.mockRejectedValue(makeHttpError(422));
+
+      await expect(service.handle(completedPayload)).resolves.toBeUndefined();
+
+      expect(createReview).toHaveBeenCalledTimes(1);
+      expect(dicoshot.sendCustom).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'GitHub 리뷰 등록 실패' }),
+      );
+    });
   });
 
   describe('같은 PR에 이미 봇 리뷰가 있는 경우 (push 반복)', () => {

@@ -1,4 +1,5 @@
 import {
+  appendUnanchoredFindings,
   buildReviewComments,
   formatReviewSummary,
 } from './review-comment.formatter';
@@ -51,5 +52,33 @@ describe('buildReviewComments', () => {
 
     expect(body).not.toContain('```suggestion');
     expect(body).toContain('제안: 이 부분을 이렇게 바꾸는 게 좋습니다.');
+  });
+
+  describe('appendUnanchoredFindings', () => {
+    it('finding이 없으면 본문을 그대로 돌려준다', () => {
+      expect(appendUnanchoredFindings('# Code Review\n\nok', [])).toBe(
+        '# Code Review\n\nok',
+      );
+    });
+
+    it('위치를 특정할 수 없는 finding을 파일:줄과 함께 본문 끝에 모은다', () => {
+      const result = appendUnanchoredFindings('# Code Review\n\nok', [
+        { path: 'a.spec.ts', line: 109, body: '**[major] 제목**\n\n설명' },
+      ]);
+
+      expect(result).toContain('# Code Review\n\nok');
+      expect(result).toContain('### 위치를 특정할 수 없는 지적사항');
+      expect(result).toContain('`a.spec.ts:109`');
+      expect(result).toContain('**[major] 제목**');
+    });
+
+    it('GitHub 본문 길이 상한을 넘지 않도록 자른다', () => {
+      const result = appendUnanchoredFindings('body', [
+        { path: 'a.ts', line: 1, body: 'x'.repeat(70000) },
+      ]);
+
+      expect(result.length).toBeLessThan(65536);
+      expect(result).toContain('길이 제한으로 일부 생략');
+    });
   });
 });

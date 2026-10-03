@@ -239,6 +239,24 @@ describe('PrDataCollectorService', () => {
     expect(byPath.get('docs/e.md')).toHaveLength(100 * 1024);
   });
 
+  it('changedFiles는 소스 → 테스트 → 문서 순으로 정렬해 보낸다 (ai-server가 앞에서부터 예산을 쓰므로)', async () => {
+    mockChangedFiles([
+      { filename: 'README.md', status: 'modified', patch: '@@ -1 +1 @@' },
+      { filename: 'docs/guide.md', status: 'modified', patch: '@@ -1 +1 @@' },
+      { filename: 'src/a.spec.ts', status: 'modified', patch: '@@ -1 +1 @@' },
+      { filename: 'src/a.ts', status: 'modified', patch: '@@ -1 +1 @@' },
+    ]);
+
+    const result = await service.collect(command);
+
+    expect(result?.changedFiles.map((f) => f.filePath)).toEqual([
+      'src/a.ts',
+      'src/a.spec.ts',
+      'README.md',
+      'docs/guide.md',
+    ]);
+  });
+
   it('getContent 조회가 실패하면 content 없이 나머지 필드는 그대로 반환한다', async () => {
     mockChangedFiles([
       { filename: 'src/foo.ts', status: 'modified', patch: '@@ -1 +1 @@' },

@@ -149,17 +149,30 @@ github-app → ai-server. 메인 리뷰 발행 경로와 완전히 독립된 경
 4. 지원 스택 감지 (`package.json`의 `dependencies`/`devDependencies`에 `@nestjs/core` 존재, PR head 기준)
 5. 문서 전용 PR이 아님 (변경 파일이 전부 `docs/` 하위이거나 `.md`/`.mdx`면 스킵 — lockfile만 바뀐 PR은 문서 전용으로 취급하지 않는다)
 
-| 필드             | 타입   | 비고                                                                                                                                                                                                                                                      |
-| ---------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reviewJobId`    | string | `pr.review.requested`와 동일한 포맷(`{repositoryId}:{prNumber}:{headSha}`)이지만 별개 트랙 — github-app 쪽 dedup 키는 `sandbox:{reviewJobId}`로 네임스페이스를 분리해 메인 리뷰 idempotency와 충돌하지 않게 한다(과거 실제 충돌 사고 #40 참고)            |
-| `repositoryId`   | number |                                                                                                                                                                                                                                                           |
-| `repoFullName`   | string | `owner/repo` — clone에 필수. **"한쪽만 쓰는 필드는 이벤트에 안 싣는다"는 아래 요약 원칙 4번의 의도적 예외**(ai-server가 실제로 clone에 소비)                                                                                                              |
-| `prNumber`       | number |                                                                                                                                                                                                                                                           |
-| `headSha`        | string | clone 시 이 sha로 고정 checkout (브랜치 tip이 아님 — TOCTOU 방지)                                                                                                                                                                                         |
-| `baseSha`        | string |                                                                                                                                                                                                                                                           |
-| `installationId` | number | 워커가 잡을 실제로 시작하기 직전에 `contents:read` 스코프 토큰을 요청할 때 필요(스펙의 "토큰 처리" 절 — installation token은 Kafka 이벤트에 절대 싣지 않는다). **그 요청을 받을 github-app 쪽 엔드포인트/인증 방식은 별도 이슈로 설계 필요**(아직 미구현) |
+| 필드             | 타입   | 비고                                                                                                                                                                                                                                           |
+| ---------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reviewJobId`    | string | `pr.review.requested`와 동일한 포맷(`{repositoryId}:{prNumber}:{headSha}`)이지만 별개 트랙 — github-app 쪽 dedup 키는 `sandbox:{reviewJobId}`로 네임스페이스를 분리해 메인 리뷰 idempotency와 충돌하지 않게 한다(과거 실제 충돌 사고 #40 참고) |
+| `repositoryId`   | number |                                                                                                                                                                                                                                                |
+| `repoFullName`   | string | `owner/repo` — clone에 필수. **"한쪽만 쓰는 필드는 이벤트에 안 싣는다"는 아래 요약 원칙 4번의 의도적 예외**(ai-server가 실제로 clone에 소비)                                                                                                   |
+| `prNumber`       | number |                                                                                                                                                                                                                                                |
+| `headSha`        | string | clone 시 이 sha로 고정 checkout (브랜치 tip이 아님 — TOCTOU 방지)                                                                                                                                                                              |
+| `baseSha`        | string |                                                                                                                                                                                                                                                |
+| `installationId` | number | 워커가 잡을 실제로 시작하기 직전에 아래 "토큰 발급 내부 API"를 호출할 때 쓴다(installation token은 Kafka 이벤트에 절대 싣지 않는다)                                                                                                            |
 
 메시지 key: `reviewJobId`. github-app은 발행 시 `SandboxProbeJobContextStore`(Redis, TTL 2시간)에 `reviewJobId` → `{owner, repo, prNumber, installationId}`를 저장해, completed 이벤트를 받았을 때 어느 PR에 코멘트를 달지 알아낸다.
+
+#### 토큰 발급 내부 API
+
+워커 VM에는 GitHub App private key를 두지 않으므로, 워커가 clone 직전에 github-app에서 토큰을 받는다.
+
+- `POST /internal/sandbox-probe/token`
+- 인증: 헤더 `X-Dovi-Internal-Secret` = 양쪽 공유 시크릿(github-app `GITHUB_APP_INTERNAL_SECRET`, 워커 VM `GITHUB_APP_INTERNAL_SECRET`). 불일치 401, github-app에 시크릿 미설정 시 503
+- 요청: `{ "installationId": number, "repositoryId": number }` (양의 정수, 아니면 400)
+- 응답: `{ "token": string, "expiresAt": string }` — `contents: read`, `repositories: [repositoryId]`로 좁힌 토큰. 스코프별 캐시 키를 써서 메인 리뷰용 전체 권한 토큰 캐시와 섞이지 않는다
+- GitHub가 발급 대상을 거부하면(404/422/403 — installation 없음, 저장소가 installation에 속하지 않음 등) 422. GitHub 5xx·네트워크 오류·레이트 리밋(429, 레이트 리밋 403)·401(github-app 쪽 App 인증 설정 문제)은 500(워커가 재시도)
+- **github-app이 샌드박스 잡을 발행한 (installation, 저장소) 조합에만 발급한다.** 발행 시 Redis(`sandbox-probe:active:{installationId}:{repositoryId}`, TTL 2시간, 새 잡이 발행될 때마다 갱신)에 표시를 남기고, 표시가 없으면 403. 워커 VM은 신뢰할 수 없는 PR 코드를 실행하므로 공유 시크릿이 새더라도 opt-in하지 않은 다른 저장소의 코드는 읽지 못하게 하기 위함
+- 스코프 토큰은 남은 수명이 30분 이상인 것만 내준다(clone이 오래 걸려도 도중에 만료되지 않게). 부족하면 새로 발급한다
+- 토큰 값은 로그에 남기지 않는다
 
 ### `pr.sandbox.probe.completed`
 
