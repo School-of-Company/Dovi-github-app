@@ -26,6 +26,15 @@ function neutralizeMentions(text: string): string {
   return text.replace(/@(?=[a-zA-Z0-9])/g, '@​');
 }
 
+// 빌드 도구(tsc, nest 등)의 컬러 출력에 섞인 ANSI 이스케이프(`ESC[96m` 등)는 GitHub에서
+// `^[[96m` 같은 깨진 문자로 보이므로 제거한다.
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+
+function sanitize(text: string): string {
+  return neutralizeMentions(text.replace(ANSI_ESCAPE, ''));
+}
+
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength)}\n… (truncated)`;
@@ -48,12 +57,12 @@ function formatFinding(finding: SandboxProbeFinding, index: number): string {
   const evidence = truncate(finding.evidence, MAX_FINDING_EVIDENCE_LENGTH);
 
   const parts = [
-    `**${index + 1}. [${finding.probe}] ${neutralizeMentions(finding.title)}**${location}`,
+    `**${index + 1}. [${finding.probe}] ${sanitize(finding.title)}**${location}`,
     '',
-    neutralizeMentions(finding.message),
+    sanitize(finding.message),
   ];
   if (evidence.trim() !== '') {
-    parts.push('', fence(neutralizeMentions(evidence)));
+    parts.push('', fence(sanitize(evidence)));
   }
   return parts.join('\n');
 }
@@ -69,7 +78,7 @@ export function formatSandboxProbeComment(
 
   const evidence = truncate(payload.evidence, MAX_EVIDENCE_LENGTH);
   if (evidence.trim() !== '') {
-    lines.push(fence(neutralizeMentions(evidence)), '');
+    lines.push(fence(sanitize(evidence)), '');
   }
 
   if (payload.findings.length > 0) {
