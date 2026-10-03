@@ -7,6 +7,7 @@ import {
   isGoneError,
   isUnprocessableError,
 } from '../common/http-error';
+import { parseCommentableLines } from '../common/diff-lines';
 import { withRetry } from '../common/retry';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
@@ -76,8 +77,19 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     try {
       await this.deleteStaleReviewComments(octokit, context, payload.prNumber);
 
-      const formattedComments = buildReviewComments(payload.reviews);
-      const reviewBody = formatReviewSummary(payload.summary);
+      // 줄이 PR diff에 없는 finding은 GitHub가 리뷰 전체를 422로 거부하게 만들므로,
+      // 게시 전에 걸러 내 인라인으로 달 수 있는 것만 남기고 나머지는 본문에 싣는다.
+      const { inline: formattedComments, demoted } =
+        await this.partitionByDiffLines(
+          octokit,
+          context,
+          payload,
+          buildReviewComments(payload.reviews),
+        );
+      const reviewBody = appendUnanchoredFindings(
+        formatReviewSummary(payload.summary),
+        demoted,
+      );
       const existingReviewId = await this.primaryReviewStore.get(
         payload.repositoryId,
         payload.prNumber,
@@ -117,6 +129,66 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
 
       throw err;
     }
+  }
+
+  // 각 finding의 (path, line)이 PR 파일 patch의 코멘트 가능 줄에 있는지 검증해 인라인으로
+  // 달 수 있는 것과 본문으로 강등할 것을 나눈다. patch를 알 수 없는 경우(파일 목록 조회 실패,
+  // 큰 파일이라 GitHub가 patch를 생략)는 검증할 수 없으므로 강등하지 않고 인라인으로 시도해
+  // 422 폴백에 맡긴다.
+  private async partitionByDiffLines(
+    octokit: Octokit,
+    context: ReviewJobContext,
+    payload: ReviewCompletedPayload,
+    comments: FormattedReviewComment[],
+  ): Promise<{
+    inline: FormattedReviewComment[];
+    demoted: FormattedReviewComment[];
+  }> {
+    if (comments.length === 0) return { inline: comments, demoted: [] };
+
+    let files: { filename: string; patch?: string }[];
+    try {
+      files = await withRetry(() =>
+        octokit.paginate(octokit.rest.pulls.listFiles, {
+          owner: context.owner,
+          repo: context.repo,
+          pull_number: payload.prNumber,
+          per_page: 100,
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `PR 파일 목록 조회 실패, 줄 검증 없이 게시: PR #${payload.prNumber}`,
+        err,
+      );
+      return { inline: comments, demoted: [] };
+    }
+
+    const commentableByPath = new Map<string, Set<number> | null>(
+      files.map((file) => [
+        file.filename,
+        file.patch === undefined ? null : parseCommentableLines(file.patch),
+      ]),
+    );
+
+    const inline: FormattedReviewComment[] = [];
+    const demoted: FormattedReviewComment[] = [];
+    for (const comment of comments) {
+      const commentable = commentableByPath.get(comment.path);
+      // 목록에 없는 파일은 diff에 없는 파일이라 인라인으로 달 수 없다.
+      const anchorable =
+        commentable === undefined
+          ? false
+          : commentable === null || commentable.has(comment.line);
+      (anchorable ? inline : demoted).push(comment);
+    }
+
+    if (demoted.length > 0) {
+      this.logger.warn(
+        `review comments demoted reviewJobId=${payload.reviewJobId} inline=${inline.length} demoted=${demoted.length}`,
+      );
+    }
+    return { inline, demoted };
   }
 
   // 이 PR에 봇 리뷰가 처음 등록될 때만 호출된다. GitHub 리뷰(PR 타임라인의

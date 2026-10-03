@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import type { DicoshotService } from 'dicoshot-nest';
 import { ReviewOrchestratorService } from './review-orchestrator.service';
 import type { ReviewJobContextStore } from '../redis/review-job-context.store';
@@ -17,6 +18,8 @@ describe('ReviewOrchestratorService', () => {
   let updateReview: jest.Mock;
   let createReviewComment: jest.Mock;
   let paginate: jest.Mock;
+  // PR 파일 목록(listFiles) 응답. 기본값은 조회 실패 → 줄 검증을 건너뛰고 전부 인라인으로 시도.
+  let listFiles: jest.Mock;
   let deleteReviewComment: jest.Mock;
   let installationTokenManager: {
     getOctokit: jest.Mock;
@@ -59,6 +62,7 @@ describe('ReviewOrchestratorService', () => {
     updateReview = jest.fn().mockResolvedValue({ data: { id: 555 } });
     createReviewComment = jest.fn().mockResolvedValue({ data: { id: 777 } });
     paginate = jest.fn().mockResolvedValue([]);
+    listFiles = jest.fn().mockRejectedValue(new Error('files unavailable'));
     deleteReviewComment = jest.fn().mockResolvedValue(undefined);
     installationTokenManager = {
       getOctokit: jest.fn().mockResolvedValue({
@@ -67,12 +71,17 @@ describe('ReviewOrchestratorService', () => {
             createReview,
             updateReview,
             createReviewComment,
+            listFiles: 'listFiles',
             listReviewComments: 'listReviewComments',
             listCommentsForReview: 'listCommentsForReview',
             deleteReviewComment,
           },
         },
-        paginate,
+        // listFiles는 PR 파일 목록 전용 mock으로, 나머지(리뷰 코멘트 목록)는 paginate로 보낸다.
+        paginate: (endpoint: unknown, params: unknown): Promise<unknown> =>
+          endpoint === 'listFiles'
+            ? (listFiles() as Promise<unknown>)
+            : (paginate(endpoint, params) as Promise<unknown>),
       }),
       getScopedToken: jest.fn(),
     };
@@ -592,6 +601,135 @@ describe('ReviewOrchestratorService', () => {
       expect(createReview).toHaveBeenCalled();
       expect(primaryReviewStore.set).toHaveBeenCalledWith(1, 1, 555);
       expect(dicoshot.sendCustom).not.toHaveBeenCalled();
+    });
+  });
+  describe('게시 전 줄 검증 (diff 밖 finding 본문 강등)', () => {
+    function finding(filePath: string, line: number, title: string) {
+      return {
+        severity: 'major' as const,
+        confidence: 0.8,
+        filePath,
+        line,
+        title,
+        message: `msg-${title}`,
+        evidence: [],
+      };
+    }
+
+    const patch = ['@@ -1,2 +1,3 @@', ' a', '+b', ' c'].join('\n');
+
+    it('diff에 없는 줄의 finding은 인라인에서 빼고 본문에 강등해 한 번의 createReview로 게시한다', async () => {
+      listFiles.mockResolvedValue([{ filename: 'a.ts', patch }]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('a.ts', 2, 'ok'), finding('a.ts', 99, 'out')],
+      });
+
+      expect(createReview).toHaveBeenCalledTimes(1);
+      const [args] = createReview.mock.calls[0] as [
+        { body: string; comments: { path: string; line: number }[] },
+      ];
+      expect(args.comments).toEqual([
+        expect.objectContaining({ path: 'a.ts', line: 2 }),
+      ]);
+      expect(args.body).toContain('### 위치를 특정할 수 없는 지적사항');
+      expect(args.body).toContain('`a.ts:99`');
+      expect(args.body).not.toContain('`a.ts:2`');
+      expect(createReviewComment).not.toHaveBeenCalled();
+    });
+
+    it('모든 finding이 diff 밖이어도 본문 강등으로 리뷰는 게시된다', async () => {
+      listFiles.mockResolvedValue([{ filename: 'a.ts', patch }]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('a.ts', 99, 'out')],
+      });
+
+      const [args] = createReview.mock.calls[0] as [
+        { body: string; comments: unknown[] },
+      ];
+      expect(args.comments).toEqual([]);
+      expect(args.body).toContain('`a.ts:99`');
+      expect(primaryReviewStore.set).toHaveBeenCalledWith(1, 1, 555);
+    });
+
+    it('PR 파일 목록에 없는 파일의 finding은 강등한다', async () => {
+      listFiles.mockResolvedValue([{ filename: 'a.ts', patch }]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('other.ts', 1, 'missing')],
+      });
+
+      const [args] = createReview.mock.calls[0] as [
+        { body: string; comments: unknown[] },
+      ];
+      expect(args.comments).toEqual([]);
+      expect(args.body).toContain('`other.ts:1`');
+    });
+
+    it('patch가 생략된 파일(큰 파일)은 검증할 수 없으므로 강등하지 않고 인라인으로 시도한다', async () => {
+      listFiles.mockResolvedValue([{ filename: 'big.ts' }]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('big.ts', 500, 'big')],
+      });
+
+      const [args] = createReview.mock.calls[0] as [
+        { body: string; comments: { path: string }[] },
+      ];
+      expect(args.comments).toEqual([
+        expect.objectContaining({ path: 'big.ts', line: 500 }),
+      ]);
+      expect(args.body).not.toContain('위치를 특정할 수 없는');
+    });
+
+    it('PR 파일 목록 조회가 실패하면 검증 없이 전부 인라인으로 시도한다', async () => {
+      listFiles.mockRejectedValue(new Error('boom'));
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('a.ts', 99, 'x')],
+      });
+
+      const [args] = createReview.mock.calls[0] as [{ comments: unknown[] }];
+      expect(args.comments).toHaveLength(1);
+    });
+
+    it('강등 건수를 로그로 남긴다', async () => {
+      listFiles.mockResolvedValue([{ filename: 'a.ts', patch }]);
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('a.ts', 2, 'ok'), finding('a.ts', 99, 'out')],
+      });
+
+      expect(warn).toHaveBeenCalledWith(
+        'review comments demoted reviewJobId=repo_1_sha inline=1 demoted=1',
+      );
+      warn.mockRestore();
+    });
+
+    it('이미 봇 리뷰가 있는 PR에서도 diff 밖 finding은 본문(updateReview)에 강등한다', async () => {
+      primaryReviewStore.get.mockResolvedValue(555);
+      listFiles.mockResolvedValue([{ filename: 'a.ts', patch }]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('a.ts', 2, 'ok'), finding('a.ts', 99, 'out')],
+      });
+
+      expect(updateReview).toHaveBeenCalledTimes(1);
+      const [args] = updateReview.mock.calls[0] as [{ body: string }];
+      expect(args.body).toContain('`a.ts:99`');
+      expect(createReviewComment).toHaveBeenCalledTimes(1);
+      expect(createReviewComment).toHaveBeenCalledWith(
+        expect.objectContaining({ path: 'a.ts', line: 2 }),
+      );
     });
   });
 });

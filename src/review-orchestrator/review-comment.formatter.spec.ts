@@ -72,6 +72,28 @@ describe('buildReviewComments', () => {
       expect(result).toContain('**[major] 제목**');
     });
 
+    it('10건까지만 싣고 나머지는 "외 N건"으로 표기한다', () => {
+      const findings = Array.from({ length: 13 }, (_, i) => ({
+        path: `f${i}.ts`,
+        line: i + 1,
+        body: `body-${i}`,
+      }));
+
+      const result = appendUnanchoredFindings('body', findings);
+
+      expect(result).toContain('`f9.ts:10`');
+      expect(result).not.toContain('`f10.ts:11`');
+      expect(result).toContain('외 3건');
+    });
+
+    it('10건 이하면 "외 N건"을 붙이지 않는다', () => {
+      const result = appendUnanchoredFindings('body', [
+        { path: 'a.ts', line: 1, body: 'x' },
+      ]);
+
+      expect(result).not.toContain('외 ');
+    });
+
     it('GitHub 본문 길이 상한을 넘지 않도록 자른다', () => {
       const result = appendUnanchoredFindings('body', [
         { path: 'a.ts', line: 1, body: 'x'.repeat(70000) },
