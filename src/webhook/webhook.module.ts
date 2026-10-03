@@ -3,6 +3,7 @@ import { DicoshotModule } from 'dicoshot-nest';
 import { WebhookController } from './webhook.controller';
 import { WebhookSignatureGuard } from './guards/webhook-signature.guard';
 import { WebhookService } from './webhook.service';
+import { ReviewCommandGuardService } from './review-command-guard.service';
 import { PrDataCollectorModule } from '../pr-data-collector/pr-data-collector.module';
 import { ReviewDispatcherModule } from '../review-dispatcher/review-dispatcher.module';
 import { CommentAnswerModule } from '../comment-answer/comment-answer.module';
@@ -26,6 +27,6 @@ import { SandboxProbeModule } from '../sandbox-probe/sandbox-probe.module';
     }),
   ],
   controllers: [WebhookController],
-  providers: [WebhookSignatureGuard, WebhookService],
+  providers: [WebhookSignatureGuard, WebhookService, ReviewCommandGuardService],
 })
 export class WebhookModule {}
