@@ -12,11 +12,20 @@ export interface TokenScope {
   repositoryIds?: number[];
 }
 
+export interface ScopedToken {
+  token: string;
+  // ISO 8601. 토큰을 받아 쓰는 쪽(예: ai-server 샌드박스 워커)이 만료 전에 재발급할 수 있게 함께 준다.
+  expiresAt: string;
+}
+
 export interface InstallationTokenManager {
   getOctokit(installationId: number): Promise<Octokit>;
 
   // 스코프가 좁혀진 raw 토큰이 필요한 호출부(예: git clone 자격증명)를 위한
   // 메서드. 스코프별로 캐시가 분리되므로, 좁힌 토큰이 전체 권한 캐시를
   // 오염시키지 않는다.
-  getScopedToken(installationId: number, scope: TokenScope): Promise<string>;
+  getScopedToken(
+    installationId: number,
+    scope: TokenScope,
+  ): Promise<ScopedToken>;
 }
