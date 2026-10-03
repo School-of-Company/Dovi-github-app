@@ -109,4 +109,30 @@ describe('formatSandboxProbeComment', () => {
     );
     expect(body.length).toBeLessThanOrEqual(60_000);
   });
+  it('evidence의 ANSI 컬러 이스케이프는 제거한다', () => {
+    const body = formatSandboxProbeComment({
+      reviewJobId: '1:1:abcdef1234567',
+      repositoryId: 1,
+      prNumber: 1,
+      headSha: 'abcdef1234567',
+      status: 'found_issue',
+      evidence:
+        '\u001b[96msrc/a.ts\u001b[0m:\u001b[93m8\u001b[0m - \u001b[91merror\u001b[0m TS2322',
+      findings: [
+        {
+          probe: 'build',
+          title: '빌드 \u001b[31m실패\u001b[0m',
+          message: 'm',
+          filePath: null,
+          line: null,
+          evidence: '\u001b[7m8\u001b[0m return',
+        },
+      ],
+    });
+
+    expect(body).not.toContain('\u001b');
+    expect(body).toContain('src/a.ts:8 - error TS2322');
+    expect(body).toContain('빌드 실패');
+    expect(body).toContain('8 return');
+  });
 });
