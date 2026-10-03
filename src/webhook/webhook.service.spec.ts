@@ -1,4 +1,5 @@
 import { WebhookService } from './webhook.service';
+import type { ReviewCommandGuardService } from './review-command-guard.service';
 import type { PrDataCollectorService } from '../pr-data-collector/pr-data-collector.service';
 import type { ReviewDispatcherService } from '../review-dispatcher/review-dispatcher.service';
 import type { CommentAnswerCollectorService } from '../comment-answer/comment-answer-collector.service';
@@ -59,6 +60,7 @@ describe('WebhookService', () => {
     notifyIssueCommentInProgress: jest.Mock;
   };
   let sandboxProbeDispatcherService: { notifyPrOpened: jest.Mock };
+  let reviewCommandGuard: { check: jest.Mock };
   let dicoshot: { sendCustom: jest.Mock };
   let service: WebhookService;
 
@@ -91,6 +93,7 @@ describe('WebhookService', () => {
       notifyIssueCommentInProgress: jest.fn(),
     };
     sandboxProbeDispatcherService = { notifyPrOpened: jest.fn() };
+    reviewCommandGuard = { check: jest.fn().mockResolvedValue('allowed') };
     dicoshot = { sendCustom: jest.fn().mockResolvedValue(undefined) };
 
     service = new WebhookService(
@@ -104,6 +107,7 @@ describe('WebhookService', () => {
       reviewCommentFindingStore as unknown as ReviewCommentFindingStore,
       reviewReactionService as unknown as ReviewReactionService,
       sandboxProbeDispatcherService as unknown as SandboxProbeDispatcherService,
+      reviewCommandGuard as unknown as ReviewCommandGuardService,
       dicoshot as unknown as DicoshotService,
     );
   });
@@ -791,5 +795,95 @@ describe('WebhookService', () => {
     await flush();
 
     expect(reviewCommentFindingStore.get).not.toHaveBeenCalled();
+  });
+  describe('명령 권한·쿨다운', () => {
+    it('/dovi review는 PR 작성자·코멘트 작성자·레포 정보로 권한 검사를 거친다', async () => {
+      service.handle(
+        'issue_comment',
+        issueCommentPayload({
+          issue: {
+            number: 1,
+            user: { login: 'carol' },
+            pull_request: { url: 'https://api.github.com/x' },
+          },
+        }),
+      );
+      await flush();
+
+      expect(reviewCommandGuard.check).toHaveBeenCalledWith({
+        installationId: 10,
+        owner: 'owner',
+        repo: 'repo',
+        repositoryId: 1,
+        prNumber: 1,
+        commenter: 'alice',
+        prAuthor: 'carol',
+      });
+    });
+
+    it.each(['forbidden', 'cooldown', 'error'] as const)(
+      '/dovi review가 %s 판정이면 AI 리뷰를 일으키지 않는다',
+      async (decision) => {
+        reviewCommandGuard.check.mockResolvedValue(decision);
+
+        service.handle('issue_comment', issueCommentPayload());
+        await flush();
+
+        expect(prDataCollector.collectByPrNumber).not.toHaveBeenCalled();
+        expect(dispatcher.dispatch).not.toHaveBeenCalled();
+        expect(
+          reviewReactionService.notifyIssueCommentInProgress,
+        ).not.toHaveBeenCalled();
+      },
+    );
+
+    it('봇 멘션 명령도 같은 검사를 거치고 거부되면 실행하지 않는다', async () => {
+      reviewCommandGuard.check.mockResolvedValue('forbidden');
+
+      service.handle(
+        'issue_comment',
+        issueCommentPayload({
+          comment: {
+            id: 999,
+            path: '',
+            line: null,
+            diff_hunk: '',
+            body: '@dovi-code-assist 다시 봐줘',
+          },
+        }),
+      );
+      await flush();
+
+      expect(reviewCommandGuard.check).toHaveBeenCalledTimes(1);
+      expect(dispatcher.dispatch).not.toHaveBeenCalled();
+    });
+
+    it('리뷰 스레드 멘션 답글도 권한이 없으면 Q&A를 발행하지 않는다', async () => {
+      reviewCommandGuard.check.mockResolvedValue('forbidden');
+
+      service.handle('pull_request_review_comment', reviewCommentPayload());
+      await flush();
+
+      expect(commentAnswerCollector.collectThread).not.toHaveBeenCalled();
+      expect(commentAnswerDispatcher.dispatch).not.toHaveBeenCalled();
+    });
+
+    it('명령이 아닌 일반 코멘트는 권한 조회 자체를 하지 않는다', async () => {
+      service.handle(
+        'issue_comment',
+        issueCommentPayload({
+          comment: {
+            id: 999,
+            path: '',
+            line: null,
+            diff_hunk: '',
+            body: 'LGTM',
+          },
+        }),
+      );
+      await flush();
+
+      expect(reviewCommandGuard.check).not.toHaveBeenCalled();
+    });
   });
 });

@@ -11,6 +11,7 @@ import { ReviewFeedbackDispatcherService } from '../review-feedback/review-feedb
 import { classifyReflection } from '../review-feedback/reflection-classifier';
 import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import { ReviewReactionService } from '../review-reaction/review-reaction.service';
+import { ReviewCommandGuardService } from './review-command-guard.service';
 import { SandboxProbeDispatcherService } from '../sandbox-probe/sandbox-probe-dispatcher.service';
 import { isForkPr } from './fork-pr.util';
 import type { GithubWebhookPayload } from './dto/github-webhook-payload';
@@ -47,6 +48,7 @@ export class WebhookService {
     private readonly reviewCommentFindingStore: ReviewCommentFindingStore,
     private readonly reviewReactionService: ReviewReactionService,
     private readonly sandboxProbeDispatcherService: SandboxProbeDispatcherService,
+    private readonly reviewCommandGuard: ReviewCommandGuardService,
     private readonly dicoshot: DicoshotService,
   ) {}
 
@@ -151,6 +153,24 @@ export class WebhookService {
     if (!ownerRepo) return;
     const [owner, repo] = ownerRepo;
 
+    // 멘션 답글도 AI 리뷰/답변을 일으키므로 권한 없는 사용자의 호출은 막는다.
+    void this.authorizeCommand(
+      payload,
+      owner,
+      repo,
+      payload.pull_request!.number,
+      payload.pull_request!.user?.login,
+      '리뷰 스레드 멘션',
+    ).then((allowed) => {
+      if (allowed) this.runReviewCommentCommand(payload, owner, repo);
+    });
+  }
+
+  private runReviewCommentCommand(
+    payload: GithubWebhookPayload,
+    owner: string,
+    repo: string,
+  ): void {
     const comment = payload.comment!;
     const pr = payload.pull_request!;
 
@@ -329,6 +349,24 @@ export class WebhookService {
     if (!ownerRepo) return;
     const [owner, repo] = ownerRepo;
 
+    // 이 명령은 코멘트마다 새 AI 리뷰를 돌리므로(멱등성 우회) 권한과 쿨다운을 먼저 확인한다.
+    void this.authorizeCommand(
+      payload,
+      owner,
+      repo,
+      payload.issue!.number,
+      payload.issue!.user?.login,
+      '/dovi review',
+    ).then((allowed) => {
+      if (allowed) this.runReviewCommand(payload, owner, repo);
+    });
+  }
+
+  private runReviewCommand(
+    payload: GithubWebhookPayload,
+    owner: string,
+    repo: string,
+  ): void {
     const prNumber = payload.issue!.number;
     const installationId = payload.installation!.id;
     const commentId = payload.comment!.id;
@@ -372,6 +410,33 @@ export class WebhookService {
           err,
         );
       });
+  }
+
+  // 명령 실행 권한(PR 작성자 또는 Write 이상)과 PR별 쿨다운을 확인한다. 거부 사유는
+  // 사용자에게 알리지 않고 로그만 남긴다(거부된 사용자가 봇을 시험하며 노이즈를 만들지 못하게).
+  private async authorizeCommand(
+    payload: GithubWebhookPayload,
+    owner: string,
+    repo: string,
+    prNumber: number,
+    prAuthor: string | undefined,
+    command: string,
+  ): Promise<boolean> {
+    const decision = await this.reviewCommandGuard.check({
+      installationId: payload.installation!.id,
+      owner,
+      repo,
+      repositoryId: payload.repository.id,
+      prNumber,
+      commenter: payload.sender.login,
+      prAuthor,
+    });
+    if (decision !== 'allowed') {
+      this.logger.warn(
+        `${command} 무시(${decision}): ${owner}/${repo}#${prNumber} by ${payload.sender.login}`,
+      );
+    }
+    return decision === 'allowed';
   }
 
   private shouldProcessIssueComment(payload: GithubWebhookPayload): boolean {
