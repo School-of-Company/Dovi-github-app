@@ -199,7 +199,7 @@ ai-server → github-app. `SandboxProbeResultConsumerService`(독립 컨슈머 �
 | `line`     | number \| null                           | 위와 동일한 이유로 nullable (메인 리뷰의 `line: number, gt=0` 필수와 다름)                                  |
 | `evidence` | string                                   | 최대 4KB                                                                                                    |
 
-github-app은 이 이벤트를 받으면 **메인 리뷰 코멘트(`pulls.createReview`)는 건드리지 않고**, PR 대화창에 마커 주석(`<!-- dovi:sandbox-probe -->`) 기반 sticky 코멘트를 upsert한다(`issues.createComment`/`issues.updateComment`) — 재푸시마다 코멘트가 쌓이지 않도록 항상 같은 코멘트를 갱신하며, 상태별 이모지(✅/🐛/⚠️)를 붙인다. 게시 전 evidence는 본문에 등장하는 최장 백틱 런보다 긴 코드펜스로 감싸고 `@` 멘션을 무력화(zero-width space 삽입)한다. LLM은 개입하지 않는다 — 요약 문구는 프로브 스크립트의 고정 템플릿이다.
+github-app은 이 이벤트를 받으면 **메인 리뷰 코멘트(`pulls.createReview`)는 건드리지 않고**, PR 대화창에 마커 주석(`<!-- dovi:sandbox-probe -->`) 기반 sticky 코멘트를 upsert한다(`issues.createComment`/`issues.updateComment`) — 재푸시마다 코멘트가 쌓이지 않도록 항상 같은 코멘트를 갱신하며, 상태별 이모지(✅/🐛/⚠️)를 붙인다. 게시 전 evidence는 본문에 등장하는 최장 백틱 런보다 긴 코드펜스로 감싸고 `@` 멘션을 무력화(zero-width space 삽입)한다. LLM은 개입하지 않는다 — 요약 문구는 프로브 스크립트의 고정 템플릿이다. 결과의 `headSha`가 PR의 현재 head와 다르거나(워커가 도는 동안 새 커밋이 푸시됨) PR이 닫혔으면 오래된 결과이므로 게시하지 않는다 — 새 커밋의 결과가 먼저 도착해 코멘트를 갱신했을 수도 있어 덮어쓰지 않기 위함.
 
 ## 요약 원칙
 

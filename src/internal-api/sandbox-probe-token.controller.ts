@@ -10,7 +10,7 @@ import {
   UnprocessableEntityException,
   UseGuards,
 } from '@nestjs/common';
-import { isClientError } from '../common/http-error';
+import { isClientError, isRateLimitError } from '../common/http-error';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type {
   InstallationTokenManager,
@@ -29,20 +29,6 @@ function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
-// 레이트 리밋(429, 또는 403 + retry-after/x-ratelimit-remaining: 0)은 일시적이라 워커가
-// 재시도해야 한다 — 422로 바꾸면 워커가 영구 실패로 보고 포기한다.
-function isRateLimited(err: { status: number }): boolean {
-  if (err.status === 429) return true;
-  if (err.status !== 403) return false;
-  const headers = (
-    err as { response?: { headers?: Record<string, string | undefined> } }
-  ).response?.headers;
-  return (
-    headers?.['retry-after'] !== undefined ||
-    headers?.['x-ratelimit-remaining'] === '0'
-  );
-}
-
 // installation 없음(404), 저장소가 installation에 속하지 않거나 요청 권한이 부여 범위를
 // 넘음(422/403)처럼 요청 대상 자체가 거부된 경우만 422로 돌린다. 401(App JWT/시계 문제 등
 // github-app 쪽 설정 문제)이나 레이트 리밋은 호출자 잘못이 아니므로 500으로 둔다.
@@ -50,7 +36,7 @@ function isTargetRejected(err: unknown): err is { status: number } {
   return (
     isClientError(err) &&
     [403, 404, 422].includes(err.status) &&
-    !isRateLimited(err)
+    !isRateLimitError(err)
   );
 }
 
