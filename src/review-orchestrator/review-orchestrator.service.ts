@@ -2,7 +2,11 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DicoshotService } from 'dicoshot-nest';
 import type { CustomMessageOptions } from 'dicoshot-nest';
 import type { Octokit } from '@octokit/rest';
-import { isClientError, isGoneError } from '../common/http-error';
+import {
+  isClientError,
+  isGoneError,
+  isUnprocessableError,
+} from '../common/http-error';
 import { withRetry } from '../common/retry';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
@@ -12,6 +16,7 @@ import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store
 import { PrimaryReviewStore } from '../redis/primary-review.store';
 import { ReviewFailureNoticeService } from './review-failure-notice.service';
 import {
+  appendUnanchoredFindings,
   buildReviewComments,
   formatReviewSummary,
 } from './review-comment.formatter';
@@ -124,32 +129,147 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     body: string,
     formattedComments: FormattedReviewComment[],
   ): Promise<void> {
-    const { data: review } = await octokit.rest.pulls.createReview({
+    const review = await this.createReviewWithAllComments(
+      octokit,
+      context,
+      payload,
+      body,
+      formattedComments,
+    );
+
+    if (review) {
+      await this.primaryReviewStore.set(
+        payload.repositoryId,
+        payload.prNumber,
+        review.id,
+      );
+      await this.saveCommentFindingMapping(
+        octokit,
+        context,
+        payload,
+        review.id,
+        formattedComments,
+      );
+      return;
+    }
+
+    // 인라인 코멘트 중 일부가 diff 밖 줄을 가리켜 리뷰 전체가 422로 거부된 경우다.
+    // 본문만으로 리뷰를 먼저 만들고, finding은 하나씩 게시해 달 수 있는 건 인라인으로,
+    // 못 다는 건 본문에 모은다.
+    this.logger.warn(
+      `인라인 코멘트 일부가 diff 밖이라 본문 리뷰 + 개별 게시로 전환: PR #${payload.prNumber}`,
+    );
+    const { data: bodyOnlyReview } = await octokit.rest.pulls.createReview({
       owner: context.owner,
       repo: context.repo,
       pull_number: payload.prNumber,
       commit_id: payload.headSha,
       event: 'COMMENT',
       body,
-      comments: formattedComments.map(({ path, line, body: commentBody }) => ({
-        path,
-        line,
-        body: commentBody,
-      })),
+      comments: [],
     });
-
     await this.primaryReviewStore.set(
       payload.repositoryId,
       payload.prNumber,
-      review.id,
+      bodyOnlyReview.id,
     );
-
-    await this.saveCommentFindingMapping(
+    await this.postFindings(
       octokit,
       context,
       payload,
-      review.id,
+      bodyOnlyReview.id,
+      body,
       formattedComments,
+    );
+  }
+
+  // 모든 인라인 코멘트를 한 번에 담아 리뷰를 만든다(정상 경로). GitHub가 코멘트 하나라도
+  // 해석할 수 없으면(422) 리뷰 전체를 거부하므로, 그 경우에만 null을 돌려 호출부가
+  // 개별 게시로 전환하게 한다. 코멘트가 없는데 422면 원인이 다른 것이라 그대로 던진다.
+  private async createReviewWithAllComments(
+    octokit: Octokit,
+    context: ReviewJobContext,
+    payload: ReviewCompletedPayload,
+    body: string,
+    formattedComments: FormattedReviewComment[],
+  ): Promise<{ id: number } | null> {
+    try {
+      const { data: review } = await octokit.rest.pulls.createReview({
+        owner: context.owner,
+        repo: context.repo,
+        pull_number: payload.prNumber,
+        commit_id: payload.headSha,
+        event: 'COMMENT',
+        body,
+        comments: formattedComments.map(
+          ({ path, line, body: commentBody }) => ({
+            path,
+            line,
+            body: commentBody,
+          }),
+        ),
+      });
+      return review;
+    } catch (err) {
+      if (!isUnprocessableError(err) || formattedComments.length === 0) {
+        throw err;
+      }
+      return null;
+    }
+  }
+
+  // finding을 인라인 코멘트로 하나씩 게시한다. AI가 diff 밖 줄을 가리켜 GitHub가
+  // 422로 거부한 finding은 리뷰 전체를 실패시키지 않고 모아서 리뷰 본문에 붙인다.
+  // 422 외의 에러(5xx, 권한 등)는 기존대로 그대로 던진다. 본문에 붙은 finding은
+  // 코멘트 id가 없어 반영 여부 추적 대상에서 빠진다.
+  private async postFindings(
+    octokit: Octokit,
+    context: ReviewJobContext,
+    payload: ReviewCompletedPayload,
+    reviewId: number,
+    body: string,
+    formattedComments: FormattedReviewComment[],
+  ): Promise<void> {
+    const unanchored: FormattedReviewComment[] = [];
+
+    for (const finding of formattedComments) {
+      try {
+        const { data: comment } = await withRetry(() =>
+          octokit.rest.pulls.createReviewComment({
+            owner: context.owner,
+            repo: context.repo,
+            pull_number: payload.prNumber,
+            commit_id: payload.headSha,
+            path: finding.path,
+            line: finding.line,
+            body: finding.body,
+          }),
+        );
+
+        await this.reviewCommentFindingStore.set(comment.id, {
+          reviewJobId: payload.reviewJobId,
+          findingIndex: finding.findingIndex,
+        });
+      } catch (err) {
+        if (!isUnprocessableError(err)) throw err;
+
+        this.logger.warn(
+          `인라인 코멘트를 달 수 없어 본문에 포함: ${finding.path}:${finding.line} (PR #${payload.prNumber})`,
+        );
+        unanchored.push(finding);
+      }
+    }
+
+    if (unanchored.length === 0) return;
+
+    await withRetry(() =>
+      octokit.rest.pulls.updateReview({
+        owner: context.owner,
+        repo: context.repo,
+        pull_number: payload.prNumber,
+        review_id: reviewId,
+        body: appendUnanchoredFindings(body, unanchored),
+      }),
     );
   }
 
@@ -199,27 +319,13 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       return;
     }
 
-    await Promise.all(
-      formattedComments.map(
-        async ({ path, line, body: commentBody, findingIndex }) => {
-          const { data: comment } = await withRetry(() =>
-            octokit.rest.pulls.createReviewComment({
-              owner: context.owner,
-              repo: context.repo,
-              pull_number: payload.prNumber,
-              commit_id: payload.headSha,
-              path,
-              line,
-              body: commentBody,
-            }),
-          );
-
-          await this.reviewCommentFindingStore.set(comment.id, {
-            reviewJobId: payload.reviewJobId,
-            findingIndex,
-          });
-        },
-      ),
+    await this.postFindings(
+      octokit,
+      context,
+      payload,
+      reviewId,
+      body,
+      formattedComments,
     );
   }
 

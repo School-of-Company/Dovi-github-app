@@ -15,6 +15,32 @@ export function formatReviewSummary(summary: string): string {
   return `# Code Review\n\n${summary}`;
 }
 
+// GitHub 리뷰 body 상한(65,536자)에 여유를 둔 값.
+const REVIEW_BODY_MAX_CHARS = 60000;
+
+// AI가 diff 범위 밖의 줄을 가리켜 인라인 코멘트로 달 수 없었던 finding(GitHub 422)을
+// 리뷰 본문 끝에 모아 붙인다. finding 하나가 거부당해도 리뷰 전체를 잃지 않고
+// 지적 내용이 사용자에게 전달되도록 하기 위함이다.
+export function appendUnanchoredFindings(
+  body: string,
+  findings: Pick<FormattedReviewComment, 'path' | 'line' | 'body'>[],
+): string {
+  if (findings.length === 0) return body;
+
+  const items = findings
+    .map(({ path, line, body: findingBody }) => {
+      return `#### \`${path}:${line}\`\n\n${findingBody}`;
+    })
+    .join('\n\n---\n\n');
+  const appended =
+    `${body}\n\n---\n\n### 위치를 특정할 수 없는 지적사항\n\n` +
+    `PR diff 범위 밖의 줄을 가리켜 인라인 코멘트로 달 수 없어 본문에 모았습니다.\n\n${items}`;
+
+  return appended.length > REVIEW_BODY_MAX_CHARS
+    ? `${appended.slice(0, REVIEW_BODY_MAX_CHARS)}\n\n…(길이 제한으로 일부 생략)`
+    : appended;
+}
+
 // findingIndex는 원본 payload.reviews 배열 내 인덱스를 그대로 보존한다 —
 // review-orchestrator가 생성된 GitHub 코멘트 id를 이 인덱스로 역매핑해 저장한다
 // (리뷰 반영 여부 이벤트의 findingIndex로 쓰기 위함). GitHub API로는 전송하지 않는다.
