@@ -1,3 +1,5 @@
+import type { ProbeStack } from '../stack-detector';
+
 export interface SandboxProbeRequestPayload {
   reviewJobId: string;
   repositoryId: number;
@@ -13,4 +15,7 @@ export interface SandboxProbeRequestPayload {
   // 별도 이슈로 설계가 필요하다 — installationId는 그 설계가 끝날 때까지도
   // 유효한, ai-server가 실제로 필요로 하는 최소 정보라 미리 포함해둔다.
   installationId: number;
+  // 워커가 스택별 레시피(설치/빌드/기동 명령, 전용 프로브)를 고르는 기준. 도비가 repo의
+  // 빌드 파일로 감지한다.
+  stack: ProbeStack;
 }

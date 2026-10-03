@@ -9,9 +9,11 @@ import { KafkaProducerService } from '../kafka/kafka-producer.service';
 import { IdempotencyStore } from '../redis/idempotency.store';
 import { SandboxProbeJobContextStore } from '../redis/sandbox-probe-job-context.store';
 import type { SandboxProbeRequestPayload } from './dto/sandbox-probe-request.payload';
+import { detectStack, parseEnabledStacks } from './stack-detector';
 
 const DOVI_MD_SIZE_LIMIT = 200 * 1024;
-const PACKAGE_JSON_SIZE_LIMIT = 1024 * 1024;
+// 스택 판별용 파일(package.json, build.gradle, pom.xml)의 크기 상한.
+const STACK_FILE_SIZE_LIMIT = 1024 * 1024;
 // 문서 전용 PR(README/docs 만 수정)은 빌드/기동 검증 대상이 아니다. lockfile은
 // 정적 분석이 못 잡는 대표 사례라 의도적으로 문서 취급하지 않는다(스펙 참고).
 const DOC_ONLY_PATH_PATTERN = /^docs\/|\.mdx?$/i;
@@ -73,13 +75,17 @@ export class SandboxProbeDispatcherService {
     );
     if (!optedIn) return;
 
-    const isNestJsStack = await this.detectNestJsStack(
-      octokit,
-      trigger.owner,
-      trigger.repo,
-      trigger.headSha,
+    const stack = await detectStack((path) =>
+      this.readRepoFile(octokit, trigger, path),
     );
-    if (!isNestJsStack) return;
+    if (stack === null) return;
+    // 워커에 레시피가 준비되지 않은 스택은 건너뛴다(SANDBOX_PROBE_STACKS로 켠다).
+    if (!parseEnabledStacks(process.env.SANDBOX_PROBE_STACKS).has(stack)) {
+      this.logger.log(
+        `샌드박스 프로브가 꺼진 스택(${stack}), 스킵: ${trigger.owner}/${trigger.repo}#${trigger.prNumber}`,
+      );
+      return;
+    }
 
     const isDocOnly = await this.isDocOnlyChange(
       octokit,
@@ -121,6 +127,7 @@ export class SandboxProbeDispatcherService {
       headSha: trigger.headSha,
       baseSha: trigger.baseSha,
       installationId: trigger.installationId,
+      stack,
     };
 
     try {
@@ -155,34 +162,21 @@ export class SandboxProbeDispatcherService {
     return parseSandboxProbeOptIn(result.content);
   }
 
-  private async detectNestJsStack(
+  // 스택 감지기가 쓰는 파일 읽기. PR head 기준이라 PR이 의존성을 바꿔도 반영된다.
+  private async readRepoFile(
     octokit: Octokit,
-    owner: string,
-    repo: string,
-    headSha: string,
-  ): Promise<boolean> {
+    trigger: SandboxProbeTrigger,
+    path: string,
+  ): Promise<string | null> {
     const result = await fetchFileContent(
       octokit,
-      owner,
-      repo,
-      headSha,
-      'package.json',
-      PACKAGE_JSON_SIZE_LIMIT,
+      trigger.owner,
+      trigger.repo,
+      trigger.headSha,
+      path,
+      STACK_FILE_SIZE_LIMIT,
     );
-    if (result.content === null) return false;
-
-    try {
-      const parsed = JSON.parse(result.content) as {
-        dependencies?: Record<string, string>;
-        devDependencies?: Record<string, string>;
-      };
-      return Boolean(
-        parsed.dependencies?.['@nestjs/core'] ||
-        parsed.devDependencies?.['@nestjs/core'],
-      );
-    } catch {
-      return false;
-    }
+    return result.content;
   }
 
   private async isDocOnlyChange(
