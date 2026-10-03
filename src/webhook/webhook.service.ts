@@ -17,7 +17,17 @@ import type { GithubWebhookPayload } from './dto/github-webhook-payload';
 import type { ReplyContext } from '../pr-data-collector/dto/review-request.payload';
 import type { CommentAnswerRequestPayload } from '../comment-answer/dto/comment-answer-request.payload';
 
-const ALLOWED_PR_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
+// 자동 AI 리뷰는 PR이 리뷰 가능해지는 시점에만 돈다. push(synchronize)마다 전체 리뷰를
+// 돌리면 사소한 커밋에도 매번 AI 비용/대기가 들고 PR 대화창이 번잡해지므로, 이후 재리뷰는
+// 명시적 요청(@멘션, /dovi review)에 맡긴다. ready_for_review는 draft로 열었다가 준비
+// 완료로 전환한 PR의 첫 리뷰다.
+const AUTO_REVIEW_PR_ACTIONS = new Set([
+  'opened',
+  'reopened',
+  'ready_for_review',
+]);
+// 샌드박스 프로브(빌드/기동 검증)는 커밋마다 검증해야 하므로 push도 대상이다.
+const SANDBOX_PROBE_PR_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
 const REVIEW_COMMAND = '/dovi review';
 // branch/tag가 삭제된 push 이벤트는 after가 이 값으로 온다.
 const EMPTY_SHA = '0'.repeat(40);
@@ -66,26 +76,31 @@ export class WebhookService {
     if (!ownerRepo) return;
     const [owner, repo] = ownerRepo;
 
+    // 메인 리뷰 발행과 완전히 독립된 경로 — 샌드박스 프로브 발행 여부 판단이나
+    // 발행 자체가 실패해도 메인 리뷰에는 전혀 영향을 주지 않는다.
+    if (SANDBOX_PROBE_PR_ACTIONS.has(payload.action)) {
+      this.sandboxProbeDispatcherService.notifyPrOpened({
+        installationId: payload.installation!.id,
+        owner,
+        repo,
+        repositoryId: payload.repository.id,
+        defaultBranch: payload.repository.default_branch,
+        prNumber: payload.pull_request!.number,
+        headSha: payload.pull_request!.head.sha,
+        baseSha: payload.pull_request!.base.sha,
+        isFork: isForkPr(payload),
+      });
+    }
+
+    // push(synchronize)는 프로브만 검토하고, AI 리뷰는 요청이 있을 때만 실행한다.
+    if (!AUTO_REVIEW_PR_ACTIONS.has(payload.action)) return;
+
     this.reviewReactionService.notifyPrInProgress(
       payload.installation!.id,
       owner,
       repo,
       payload.pull_request!.number,
     );
-
-    // 메인 리뷰 발행과 완전히 독립된 경로 — 샌드박스 프로브 발행 여부 판단이나
-    // 발행 자체가 실패해도 메인 리뷰에는 전혀 영향을 주지 않는다.
-    this.sandboxProbeDispatcherService.notifyPrOpened({
-      installationId: payload.installation!.id,
-      owner,
-      repo,
-      repositoryId: payload.repository.id,
-      defaultBranch: payload.repository.default_branch,
-      prNumber: payload.pull_request!.number,
-      headSha: payload.pull_request!.head.sha,
-      baseSha: payload.pull_request!.base.sha,
-      isFork: isForkPr(payload),
-    });
 
     this.prDataCollectorService
       .collect({
@@ -436,7 +451,8 @@ export class WebhookService {
     return (
       !!payload.installation &&
       !!payload.pull_request &&
-      ALLOWED_PR_ACTIONS.has(payload.action) &&
+      (AUTO_REVIEW_PR_ACTIONS.has(payload.action) ||
+        SANDBOX_PROBE_PR_ACTIONS.has(payload.action)) &&
       !payload.pull_request.draft &&
       payload.sender.type === 'User'
     );

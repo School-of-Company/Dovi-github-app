@@ -366,6 +366,97 @@ describe('WebhookService', () => {
     );
   });
 
+  describe('pull_request 액션별 동작 (자동 리뷰는 push에 돌지 않는다)', () => {
+    it.each(['opened', 'reopened', 'ready_for_review'])(
+      '%s면 AI 리뷰를 실행하고 👀 리액션을 남긴다',
+      async (action) => {
+        service.handle('pull_request', pullRequestPayload({ action }));
+        await flush();
+
+        expect(prDataCollector.collect).toHaveBeenCalled();
+        expect(dispatcher.dispatch).toHaveBeenCalled();
+        expect(reviewReactionService.notifyPrInProgress).toHaveBeenCalledWith(
+          10,
+          'owner',
+          'repo',
+          1,
+        );
+      },
+    );
+
+    it('synchronize(push)는 AI 리뷰도 👀 리액션도 하지 않는다', async () => {
+      service.handle(
+        'pull_request',
+        pullRequestPayload({ action: 'synchronize' }),
+      );
+      await flush();
+
+      expect(prDataCollector.collect).not.toHaveBeenCalled();
+      expect(dispatcher.dispatch).not.toHaveBeenCalled();
+      expect(reviewReactionService.notifyPrInProgress).not.toHaveBeenCalled();
+    });
+
+    it('synchronize(push)에도 샌드박스 프로브 발행 검토는 계속한다', async () => {
+      service.handle(
+        'pull_request',
+        pullRequestPayload({ action: 'synchronize' }),
+      );
+      await flush();
+
+      expect(sandboxProbeDispatcherService.notifyPrOpened).toHaveBeenCalledWith(
+        expect.objectContaining({ prNumber: 1 }),
+      );
+    });
+
+    it.each(['labeled', 'assigned', 'edited', 'closed', 'review_requested'])(
+      '리뷰와 무관한 액션(%s)은 아무것도 하지 않는다',
+      async (action) => {
+        service.handle('pull_request', pullRequestPayload({ action }));
+        await flush();
+
+        expect(prDataCollector.collect).not.toHaveBeenCalled();
+        expect(reviewReactionService.notifyPrInProgress).not.toHaveBeenCalled();
+        expect(
+          sandboxProbeDispatcherService.notifyPrOpened,
+        ).not.toHaveBeenCalled();
+      },
+    );
+
+    it('draft PR은 리뷰도 프로브 검토도 하지 않는다', async () => {
+      service.handle(
+        'pull_request',
+        pullRequestPayload({
+          pull_request: {
+            number: 1,
+            draft: true,
+            title: 'PR 제목',
+            body: 'PR 본문',
+            head: { sha: 'sha', repo: { id: 1, full_name: 'owner/repo' } },
+            base: { sha: 'base-sha' },
+          },
+        }),
+      );
+      await flush();
+
+      expect(prDataCollector.collect).not.toHaveBeenCalled();
+      expect(
+        sandboxProbeDispatcherService.notifyPrOpened,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('봇이 연 PR은 무시한다 (루프 방지)', async () => {
+      service.handle(
+        'pull_request',
+        pullRequestPayload({
+          sender: { type: 'Bot', login: 'dependabot[bot]' },
+        }),
+      );
+      await flush();
+
+      expect(prDataCollector.collect).not.toHaveBeenCalled();
+    });
+  });
+
   it('PR 데이터 수집이 실패하면 Discord로 실패를 알린다', async () => {
     prDataCollector.collect.mockRejectedValue(new Error('connect timeout'));
 

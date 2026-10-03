@@ -64,6 +64,7 @@ Kafka 메시지 key는 `reviewJobId`(문자열)를 그대로 사용한다.
 | `content`  | string?                                           | 변경 후 파일 전체 원문 (UTF-8). ai-server의 AST context 기능(`app/review/chunking.py`)이 변경된 함수/클래스 전체를 리뷰에 포함시키는 데 사용. `removed` 파일, tree-sitter 미지원 확장자(`.py`/`.js`/`.jsx`/`.mjs`/`.cjs`/`.ts`/`.tsx` 외), secret 경로, 200KB(`CHANGED_FILE_CONTENT_SIZE_LIMIT`) 초과 시 생략 — 이 경우 ai-server는 hunk만으로 리뷰한다. |
 
 - Kafka 브로커 기본 `message.max.bytes`(~1MB)를 넘기지 않도록, PR 하나에서 보내는 `changedFiles[].content` 총합에 512KB(`CHANGED_FILE_CONTENT_TOTAL_BUDGET`) 예산을 둔다. 초과하면 `PrDataCollectorService`가 큰 파일부터 `content`를 비운다(파일 자체는 `patch`와 함께 그대로 남는다) — GitHub Contents API 자체도 파일당 1MB 상한이 있어 개별 파일 크기만으로는 메시지 전체 크기를 보장할 수 없기 때문.
+- 추가로 `content + patch` 총합에 768KB(`CHANGED_FILE_TOTAL_BUDGET`) 상한을 둔다. `patch`는 GitHub API가 파일 하나 단위로만 제한해서, 파일 수가 많은 PR은 content를 다 비워도 patch만으로 메시지 크기를 넘길 수 있다. 상한을 넘으면 content를 먼저 더 비우고, 그래도 넘으면 큰 파일부터 `patch`까지 비운다(파일 항목 `filePath`/`status`는 남는다 — 그 파일은 사실상 리뷰 대상에서 빠진다). 이런 대형 PR을 정보 손실 없이 리뷰하는 샤딩 방식은 #58에서 설계 중이다.
 
 `ContextFile` (ai-server의 `## Project Context` 프롬프트 섹션을 채우는 값, 노션 기획 7.2절 "DOVI.md가 프로젝트 컨텍스트 진입점"):
 
