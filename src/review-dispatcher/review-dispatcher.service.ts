@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { KafkaProducerService } from '../kafka/kafka-producer.service';
+import { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import { IdempotencyStore } from '../redis/idempotency.store';
 import { JobStateStore } from '../redis/job-state.store';
 import { ReviewJobContextStore } from '../redis/review-job-context.store';
@@ -15,6 +16,7 @@ export class ReviewDispatcherService {
     private readonly jobStateStore: JobStateStore,
     private readonly reviewJobContextStore: ReviewJobContextStore,
     private readonly kafkaProducer: KafkaProducerService,
+    private readonly reviewFreshness: ReviewFreshnessService,
   ) {}
 
   async dispatch(
@@ -35,6 +37,20 @@ export class ReviewDispatcherService {
 
     if (state === 'completed' || state === 'processing') {
       this.logger.log(`현재 상태(${state})로 스킵: ${reviewJobId}`);
+      return;
+    }
+
+    // 수집하는 동안 PR이 닫혔거나 새 커밋이 올라왔으면 발행하지 않는다. 큐에 쌓이면 AI
+    // 서버(직렬)가 헛돈 리뷰를 하느라 다른 PR이 밀린다. 이미 발행된 요청은 되돌릴 수 없고,
+    // 그 결과는 게시 단계(ReviewOrchestratorService)가 걸러낸다.
+    const staleReason = await this.reviewFreshness.findStaleReason(context, {
+      repositoryId: payload.repositoryId,
+      headSha: payload.headSha,
+    });
+    if (staleReason !== null) {
+      this.logger.log(
+        `stale review request skipped (${staleReason}): ${context.owner}/${context.repo}#${context.prNumber} reviewJobId=${reviewJobId} headSha=${payload.headSha}`,
+      );
       return;
     }
 

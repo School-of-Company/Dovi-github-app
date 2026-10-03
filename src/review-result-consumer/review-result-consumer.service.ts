@@ -53,7 +53,10 @@ export class ReviewResultConsumerService
           'Invalid completed payload: reviewJobId is missing',
         );
       }
-      await this.orchestrator.handle(payload);
+      const outcome = await this.orchestrator.handle(payload);
+      // 오래되어 게시하지 않은 결과는 "처리 완료"로 표시하지 않는다 — 표시하면 같은 커밋으로
+      // PR이 다시 열렸을 때(reopened) 멱등성 키 때문에 리뷰가 영영 안 돈다.
+      if (outcome === 'stale') return;
       await Promise.all([
         this.jobStateStore.set(payload.reviewJobId, 'completed'),
         this.idempotencyStore.markProcessed(payload.reviewJobId),

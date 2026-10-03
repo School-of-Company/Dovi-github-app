@@ -74,6 +74,30 @@ describe('ReviewResultConsumerService', () => {
     );
   });
 
+  it('오래되어 게시하지 않은 결과는 completed·idempotency를 남기지 않는다 (PR 재오픈 시 리뷰가 돌 수 있게)', async () => {
+    orchestrator.handle.mockResolvedValue('stale');
+    const payload: ReviewCompletedPayload = {
+      reviewJobId: '1:1:sha',
+      repositoryId: 1,
+      prNumber: 1,
+      headSha: 'sha',
+      summary: 'ok',
+      reviews: [],
+      modelVersion: 'qwen2.5-coder-32b',
+      promptVersion: 'v1',
+    };
+    const message = { value: Buffer.from(JSON.stringify(payload)) };
+
+    await (service as unknown as ConsumerWithHandleMessage).handleMessage(
+      completedTopic,
+      message,
+    );
+
+    expect(orchestrator.handle).toHaveBeenCalledWith(payload);
+    expect(jobStateStore.set).not.toHaveBeenCalled();
+    expect(idempotencyStore.markProcessed).not.toHaveBeenCalled();
+  });
+
   it('failed 토픽 처리 시 jobState를 failed로 갱신하고 idempotency는 기록하지 않는다', async () => {
     const payload: ReviewFailedPayload = {
       reviewJobId: '1:1:sha',
