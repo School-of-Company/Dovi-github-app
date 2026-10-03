@@ -146,7 +146,7 @@ github-app → ai-server. 메인 리뷰 발행 경로와 완전히 독립된 경
 1. 발행 측 킬스위치(`SANDBOX_PROBE_PUBLISH_ENABLED=true`) 켜짐
 2. 같은 레포 브랜치 PR (fork PR 제외 — `isForkPr()`)
 3. 레포별 opt-in (`DOVI.md`의 `## Sandbox Probe` 섹션 값이 `true`/`on`/`enabled`/`yes`, `default_branch` 기준으로 읽음)
-4. 지원 스택 감지 (`package.json`의 `dependencies`/`devDependencies`에 `@nestjs/core` 존재, PR head 기준)
+4. 지원 스택 감지 + 허용 스택 (PR head 기준, 앞에서부터 처음 맞는 스택 하나). `nestjs`(`package.json`에 `@nestjs/core`), `nextjs`(`next`), `react`(`react`), `vue`(`vue`), `spring`(`build.gradle`/`build.gradle.kts`/`pom.xml`에 Spring Boot). 감지된 스택이 `SANDBOX_PROBE_STACKS`(쉼표 구분, 기본값 `nestjs`)에 없으면 스킵 — 워커에 그 스택의 레시피가 준비된 뒤 켠다
 5. 문서 전용 PR이 아님 (변경 파일이 전부 `docs/` 하위이거나 `.md`/`.mdx`면 스킵 — lockfile만 바뀐 PR은 문서 전용으로 취급하지 않는다)
 
 | 필드             | 타입   | 비고                                                                                                                                                                                                                                           |
@@ -158,6 +158,7 @@ github-app → ai-server. 메인 리뷰 발행 경로와 완전히 독립된 경
 | `headSha`        | string | clone 시 이 sha로 고정 checkout (브랜치 tip이 아님 — TOCTOU 방지)                                                                                                                                                                              |
 | `baseSha`        | string |                                                                                                                                                                                                                                                |
 | `installationId` | number | 워커가 잡을 실제로 시작하기 직전에 아래 "토큰 발급 내부 API"를 호출할 때 쓴다(installation token은 Kafka 이벤트에 절대 싣지 않는다)                                                                                                            |
+| `stack`          | string | `nestjs` \| `nextjs` \| `react` \| `vue` \| `spring`. 워커가 스택별 레시피(설치/빌드/기동 명령, 전용 프로브)를 고르는 기준. 도비가 repo의 빌드 파일로 감지해 싣는다                                                                            |
 
 메시지 key: `reviewJobId`. github-app은 발행 시 `SandboxProbeJobContextStore`(Redis, TTL 2시간)에 `reviewJobId` → `{owner, repo, prNumber, installationId}`를 저장해, completed 이벤트를 받았을 때 어느 PR에 코멘트를 달지 알아낸다.
 
