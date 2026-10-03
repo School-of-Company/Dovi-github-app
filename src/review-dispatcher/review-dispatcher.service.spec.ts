@@ -3,6 +3,7 @@ import type { IdempotencyStore } from '../redis/idempotency.store';
 import type { JobStateStore } from '../redis/job-state.store';
 import type { ReviewJobContextStore } from '../redis/review-job-context.store';
 import type { KafkaProducerService } from '../kafka/kafka-producer.service';
+import type { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import type { ReviewRequestPayload } from '../pr-data-collector/dto/review-request.payload';
 import type { ReviewJobContext } from '../redis/review-job-context.type';
 
@@ -30,6 +31,7 @@ describe('ReviewDispatcherService', () => {
   let jobStateStore: { get: jest.Mock; set: jest.Mock };
   let reviewJobContextStore: { set: jest.Mock };
   let kafkaProducer: { send: jest.Mock };
+  let reviewFreshness: { findStaleReason: jest.Mock };
   let service: ReviewDispatcherService;
 
   beforeEach(() => {
@@ -39,12 +41,14 @@ describe('ReviewDispatcherService', () => {
     jobStateStore = { get: jest.fn(), set: jest.fn() };
     reviewJobContextStore = { set: jest.fn() };
     kafkaProducer = { send: jest.fn() };
+    reviewFreshness = { findStaleReason: jest.fn().mockResolvedValue(null) };
 
     service = new ReviewDispatcherService(
       idempotencyStore as unknown as IdempotencyStore,
       jobStateStore as unknown as JobStateStore,
       reviewJobContextStore as unknown as ReviewJobContextStore,
       kafkaProducer as unknown as KafkaProducerService,
+      reviewFreshness as unknown as ReviewFreshnessService,
     );
   });
 
@@ -71,6 +75,33 @@ describe('ReviewDispatcherService', () => {
       expect(kafkaProducer.send).not.toHaveBeenCalled();
     },
   );
+
+  it.each(['closed', 'head-changed'] as const)(
+    '수집하는 동안 PR이 오래됐으면(%s) 발행하지 않고 상태·컨텍스트도 남기지 않는다',
+    async (reason) => {
+      idempotencyStore.exists.mockResolvedValue(false);
+      jobStateStore.get.mockResolvedValue(null);
+      reviewFreshness.findStaleReason.mockResolvedValue(reason);
+
+      await service.dispatch(payload, context);
+
+      expect(reviewFreshness.findStaleReason).toHaveBeenCalledWith(context, {
+        repositoryId: payload.repositoryId,
+        headSha: payload.headSha,
+      });
+      expect(kafkaProducer.send).not.toHaveBeenCalled();
+      expect(jobStateStore.set).not.toHaveBeenCalled();
+      expect(reviewJobContextStore.set).not.toHaveBeenCalled();
+    },
+  );
+
+  it('이미 처리된 job은 PR 상태를 조회하지 않고 먼저 스킵한다', async () => {
+    idempotencyStore.exists.mockResolvedValue(true);
+
+    await service.dispatch(payload, context);
+
+    expect(reviewFreshness.findStaleReason).not.toHaveBeenCalled();
+  });
 
   it('중복이 아니면 requested 상태와 job context를 저장한 후 발행한다', async () => {
     idempotencyStore.exists.mockResolvedValue(false);

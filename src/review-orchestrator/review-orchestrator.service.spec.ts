@@ -6,6 +6,7 @@ import type { ReviewJobContext } from '../redis/review-job-context.type';
 import type { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import type { PrimaryReviewStore } from '../redis/primary-review.store';
 import type { ReviewFailureNoticeService } from './review-failure-notice.service';
+import type { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
 
@@ -30,6 +31,7 @@ describe('ReviewOrchestratorService', () => {
   let primaryReviewStore: { get: jest.Mock; set: jest.Mock; delete: jest.Mock };
   let dicoshot: { sendCustom: jest.Mock };
   let reviewFailureNotice: { notify: jest.Mock; clear: jest.Mock };
+  let reviewFreshness: { findStaleReason: jest.Mock };
   let service: ReviewOrchestratorService;
 
   const context: ReviewJobContext = {
@@ -93,6 +95,7 @@ describe('ReviewOrchestratorService', () => {
       delete: jest.fn().mockResolvedValue(undefined),
     };
     dicoshot = { sendCustom: jest.fn() };
+    reviewFreshness = { findStaleReason: jest.fn().mockResolvedValue(null) };
     reviewFailureNotice = {
       notify: jest.fn().mockResolvedValue(undefined),
       clear: jest.fn().mockResolvedValue(undefined),
@@ -105,6 +108,7 @@ describe('ReviewOrchestratorService', () => {
       primaryReviewStore as unknown as PrimaryReviewStore,
       dicoshot as unknown as DicoshotService,
       reviewFailureNotice as unknown as ReviewFailureNoticeService,
+      reviewFreshness as unknown as ReviewFreshnessService,
     );
   });
 
@@ -129,6 +133,47 @@ describe('ReviewOrchestratorService', () => {
       failedPayload,
     );
     expect(reviewFailureNotice.clear).not.toHaveBeenCalled();
+  });
+
+  it.each(['closed', 'head-changed'] as const)(
+    '결과가 오래됐으면(%s) 리뷰를 게시하지 않고 stale을 돌려준다',
+    async (reason) => {
+      reviewFreshness.findStaleReason.mockResolvedValue(reason);
+
+      const outcome = await service.handle(completedPayload);
+
+      expect(outcome).toBe('stale');
+      expect(reviewFreshness.findStaleReason).toHaveBeenCalledWith(context, {
+        repositoryId: completedPayload.repositoryId,
+        headSha: completedPayload.headSha,
+      });
+      expect(createReview).not.toHaveBeenCalled();
+      expect(updateReview).not.toHaveBeenCalled();
+      expect(createReviewComment).not.toHaveBeenCalled();
+      expect(deleteReviewComment).not.toHaveBeenCalled();
+      expect(reviewFailureNotice.clear).not.toHaveBeenCalled();
+    },
+  );
+
+  it('오래된 결과를 건너뛰어도 Discord 오류 알림은 보내지 않는다', async () => {
+    reviewFreshness.findStaleReason.mockResolvedValue('closed');
+
+    await service.handle(completedPayload);
+
+    expect(dicoshot.sendCustom).not.toHaveBeenCalled();
+  });
+
+  it('최신 결과는 정상 게시하고 stale을 돌려주지 않는다', async () => {
+    const outcome = await service.handle(completedPayload);
+
+    expect(outcome).toBeUndefined();
+    expect(createReview).toHaveBeenCalled();
+  });
+
+  it('failed payload에는 오래됨 확인을 하지 않는다', async () => {
+    await service.handle(failedPayload);
+
+    expect(reviewFreshness.findStaleReason).not.toHaveBeenCalled();
   });
 
   it('리뷰 등록에 성공하면 이전 실패 안내 코멘트를 정리한다', async () => {
