@@ -155,6 +155,37 @@ describe('RepoIndexCollectorService', () => {
       );
     });
 
+    it('content 안의 하드코딩된 시크릿은 임베딩·저장되기 전에 가린다', async () => {
+      const token = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
+      compareCommitsWithBasehead.mockResolvedValue({
+        data: { files: [{ filename: 'src/foo.ts', status: 'modified' }] },
+      });
+      getContent.mockImplementation(() =>
+        Promise.resolve({
+          data: {
+            type: 'file',
+            content: toBase64(`const a = 1;\nconst t = "${token}";\n`),
+            size: 80,
+          },
+        }),
+      );
+
+      const result = await service.collect(
+        1,
+        'owner',
+        'repo',
+        42,
+        'develop',
+        'before-sha',
+        'after-sha',
+      );
+
+      expect(result?.changedFiles[0].content).not.toContain(token);
+      expect(result?.changedFiles[0].content).toBe(
+        'const a = 1;\nconst t = "ghp_***";\n',
+      );
+    });
+
     it('secret 경로는 content를 채우지 않는다', async () => {
       compareCommitsWithBasehead.mockResolvedValue({
         data: { files: [{ filename: '.env.production', status: 'added' }] },

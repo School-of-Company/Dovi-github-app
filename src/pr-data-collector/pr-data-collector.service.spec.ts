@@ -1,4 +1,7 @@
+import { Logger } from '@nestjs/common';
 import { PrDataCollectorService } from './pr-data-collector.service';
+
+const LEAKED_TOKEN = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
 
 function toBase64(content: string): string {
   return Buffer.from(content, 'utf-8').toString('base64');
@@ -237,6 +240,74 @@ describe('PrDataCollectorService', () => {
     expect(byPath.get('docs/a.md')).toBeUndefined();
     expect(byPath.get('docs/b.md')).toHaveLength(250 * 1024);
     expect(byPath.get('docs/e.md')).toHaveLength(100 * 1024);
+  });
+
+  it('content와 patch 안의 하드코딩된 시크릿을 가리고, 줄 수는 보존한다', async () => {
+    const content = `const a = 1;\nconst token = "${LEAKED_TOKEN}";\nconst b = 2;\n`;
+    mockChangedFiles([
+      {
+        filename: 'src/foo.ts',
+        status: 'modified',
+        patch: `@@ -1,3 +1,3 @@\n const a = 1;\n+const token = "${LEAKED_TOKEN}";\n const b = 2;`,
+      },
+    ]);
+    mockFileContent('src/foo.ts', content);
+
+    const result = await service.collect(command);
+    const file = result?.changedFiles[0];
+
+    expect(file?.content).not.toContain(LEAKED_TOKEN);
+    expect(file?.patch).not.toContain(LEAKED_TOKEN);
+    expect(file?.content?.split('\n')).toHaveLength(content.split('\n').length);
+    expect(file?.patch?.split('\n')).toHaveLength(4);
+    expect(file?.patch).toContain('+const token = "ghp_***"');
+  });
+
+  it('content를 조회하지 않는 파일(.md)의 patch 안 시크릿도 가린다', async () => {
+    mockChangedFiles([
+      {
+        filename: 'docs/setup.md',
+        status: 'modified',
+        patch: `@@ -1 +1 @@\n+export TOKEN="${LEAKED_TOKEN}"\n+password = "hunter2hunter2"`,
+      },
+    ]);
+
+    const result = await service.collect(command);
+
+    expect(result?.changedFiles[0].patch).not.toContain(LEAKED_TOKEN);
+    expect(result?.changedFiles[0].patch).not.toContain('hunter2hunter2');
+  });
+
+  it('contextFiles(README 등) 안의 시크릿도 가린다', async () => {
+    mockChangedFiles([]);
+    mockFileContent('README.md', `# Setup\npassword = "hunter2hunter2"\n`);
+
+    const result = await service.collect(command);
+    const readme = result?.contextFiles.find((f) => f.path === 'README.md');
+
+    expect(readme?.content).not.toContain('hunter2hunter2');
+    expect(readme?.content).toContain('# Setup');
+  });
+
+  it('마스킹 건수와 파일 경로만 로그에 남기고 시크릿 값은 남기지 않는다', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    mockChangedFiles([
+      {
+        filename: 'src/foo.ts',
+        status: 'modified',
+        patch: `@@ -1 +1 @@\n+const token = "${LEAKED_TOKEN}";`,
+      },
+    ]);
+
+    await service.collect(command);
+
+    const logged = (warn.mock.calls as unknown[][])
+      .map((call) => String(call[0]))
+      .join('\n');
+    expect(logged).toContain('시크릿 마스킹 1건');
+    expect(logged).toContain('src/foo.ts');
+    expect(logged).not.toContain(LEAKED_TOKEN);
+    warn.mockRestore();
   });
 
   it('changedFiles는 소스 → 테스트 → 문서 순으로 정렬해 보낸다 (ai-server가 앞에서부터 예산을 쓰므로)', async () => {

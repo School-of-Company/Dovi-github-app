@@ -16,6 +16,7 @@ import type { ReviewJobContext } from '../redis/review-job-context.type';
 import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import { PrimaryReviewStore } from '../redis/primary-review.store';
 import { ReviewFailureNoticeService } from './review-failure-notice.service';
+import { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import {
   appendUnanchoredFindings,
   buildReviewComments,
@@ -48,11 +49,12 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     private readonly primaryReviewStore: PrimaryReviewStore,
     private readonly dicoshot: DicoshotService,
     private readonly reviewFailureNotice: ReviewFailureNoticeService,
+    private readonly reviewFreshness: ReviewFreshnessService,
   ) {}
 
   async handle(
     payload: ReviewCompletedPayload | ReviewFailedPayload,
-  ): Promise<void> {
+  ): Promise<'stale' | undefined> {
     const context = await this.reviewJobContextStore.get(payload.reviewJobId);
     if (!context) {
       this.logger.error(
@@ -68,6 +70,18 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         this.reviewFailureNotice.notify(context, payload),
       ]);
       return;
+    }
+
+    // 요청한 뒤 PR이 닫혔거나 새 커밋이 올라왔으면 이 결과는 게시하지 않는다.
+    const staleReason = await this.reviewFreshness.findStaleReason(context, {
+      repositoryId: payload.repositoryId,
+      headSha: payload.headSha,
+    });
+    if (staleReason !== null) {
+      this.logger.log(
+        `stale review result skipped (${staleReason}): ${context.owner}/${context.repo}#${context.prNumber} reviewJobId=${payload.reviewJobId} headSha=${payload.headSha}`,
+      );
+      return 'stale';
     }
 
     const octokit = await this.installationTokenManager.getOctokit(
@@ -89,6 +103,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       const reviewBody = appendUnanchoredFindings(
         formatReviewSummary(payload.summary),
         demoted,
+        { owner: context.owner, repo: context.repo, sha: payload.headSha },
       );
       const existingReviewId = await this.primaryReviewStore.get(
         payload.repositoryId,
@@ -340,7 +355,11 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         repo: context.repo,
         pull_number: payload.prNumber,
         review_id: reviewId,
-        body: appendUnanchoredFindings(body, unanchored),
+        body: appendUnanchoredFindings(body, unanchored, {
+          owner: context.owner,
+          repo: context.repo,
+          sha: payload.headSha,
+        }),
       }),
     );
   }
