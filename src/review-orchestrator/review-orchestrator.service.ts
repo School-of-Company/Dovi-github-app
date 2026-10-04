@@ -16,6 +16,7 @@ import type { ReviewJobContext } from '../redis/review-job-context.type';
 import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import { PrimaryReviewStore } from '../redis/primary-review.store';
 import { ReviewFailureNoticeService } from './review-failure-notice.service';
+import { extractFingerprint } from './finding-fingerprint';
 import { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import {
   appendUnanchoredFindings,
@@ -89,7 +90,25 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     );
 
     try {
-      await this.deleteStaleReviewComments(octokit, context, payload.prNumber);
+      const allComments = buildReviewComments(payload.reviews);
+
+      // 이전에 게시한 코멘트를 정리하되, 이번에도 다시 나온 지적(같은 지문)은 지우지 않고
+      // 그대로 둔다. 지우고 다시 올리면 사용자가 해결(resolve)한 스레드가 되살아나고, 답글이
+      // 달린 스레드는 보존돼 같은 지적이 중복으로 또 올라간다.
+      const alreadyPosted = await this.deleteStaleReviewComments(
+        octokit,
+        context,
+        payload.prNumber,
+        new Set(allComments.map((comment) => comment.fingerprint)),
+      );
+      const freshComments = allComments.filter(
+        (comment) => !alreadyPosted.has(comment.fingerprint),
+      );
+      if (freshComments.length < allComments.length) {
+        this.logger.log(
+          `이미 게시된 지적 ${allComments.length - freshComments.length}건 생략: PR #${payload.prNumber} reviewJobId=${payload.reviewJobId}`,
+        );
+      }
 
       // 줄이 PR diff에 없는 finding은 GitHub가 리뷰 전체를 422로 거부하게 만들므로,
       // 게시 전에 걸러 내 인라인으로 달 수 있는 것만 남기고 나머지는 본문에 싣는다.
@@ -98,7 +117,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
           octokit,
           context,
           payload,
-          buildReviewComments(payload.reviews),
+          freshComments,
         );
       const reviewBody = appendUnanchoredFindings(
         formatReviewSummary(payload.summary),
@@ -468,13 +487,17 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
   // 답글은 루트 코멘트에 매달린 구조이므로, 봇이 남긴 루트라도 그 아래에 답글이
   // 하나라도 달려 있으면(다른 코멘트의 in_reply_to_id가 이 id를 가리키면) 스레드
   // 전체가 함께 삭제되지 않도록 대상에서 제외한다.
+  // 반환값: 정리 후에도 PR에 **남아 있는** 봇 코멘트의 지문. 호출부는 이 지문의 지적을 다시
+  // 게시하지 않는다. 목록 조회나 로그인 설정이 없으면 빈 집합(= 전부 새로 게시, 기존 동작).
   private async deleteStaleReviewComments(
     octokit: Octokit,
     context: ReviewJobContext,
     prNumber: number,
-  ): Promise<void> {
+    foundAgainFingerprints: Set<string>,
+  ): Promise<Set<string>> {
+    const remaining = new Set<string>();
     const botLogin = process.env.GITHUB_BOT_LOGIN;
-    if (!botLogin) return;
+    if (!botLogin) return remaining;
 
     try {
       const comments = await withRetry(() =>
@@ -492,12 +515,25 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
           .filter((id): id is number => id != null),
       );
 
-      const staleComments = comments.filter(
+      const botRoots = comments.filter(
         (comment) =>
-          comment.user?.login === `${botLogin}[bot]` &&
-          !comment.in_reply_to_id &&
-          !repliedToIds.has(comment.id),
+          comment.user?.login === `${botLogin}[bot]` && !comment.in_reply_to_id,
       );
+
+      const staleComments: typeof botRoots = [];
+      for (const comment of botRoots) {
+        const fingerprint = extractFingerprint(comment.body);
+        const hasReplies = repliedToIds.has(comment.id);
+        const foundAgain =
+          fingerprint !== null && foundAgainFingerprints.has(fingerprint);
+
+        if (hasReplies || foundAgain) {
+          // 답글이 달린 스레드는 항상 보존하고, 다시 나온 지적도 그대로 둔다.
+          if (fingerprint !== null) remaining.add(fingerprint);
+        } else {
+          staleComments.push(comment);
+        }
+      }
 
       await Promise.all(
         staleComments.map((comment) =>
@@ -515,7 +551,10 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         `이전 리뷰 코멘트 정리 실패, 새 리뷰는 계속 진행: PR #${prNumber}`,
         err,
       );
+      // 정리에 실패했으면 무엇이 남았는지 알 수 없으므로 중복 판단 없이 전부 게시한다.
+      return new Set();
     }
+    return remaining;
   }
 
   private async notifyFailure(

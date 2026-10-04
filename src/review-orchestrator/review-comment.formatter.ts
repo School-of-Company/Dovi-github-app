@@ -1,3 +1,7 @@
+import {
+  computeFindingFingerprint,
+  fingerprintMarker,
+} from './finding-fingerprint';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 
 type Finding = ReviewCompletedPayload['reviews'][number];
@@ -7,6 +11,8 @@ export type FormattedReviewComment = {
   line: number;
   body: string;
   findingIndex: number;
+  // 재리뷰 때 이미 게시한 지적을 알아보는 지문. body 끝에 같은 값이 마커로 들어 있다.
+  fingerprint: string;
 };
 
 // ai-server가 생성한 summary는 헤딩/볼드 없는 평문일 수 있어, gemini-code-assist류
@@ -108,12 +114,16 @@ export function buildReviewComments(
         Number.isInteger(review.line) &&
         review.line > 0,
     )
-    .map(({ review, findingIndex }) => ({
-      path: review.filePath,
-      line: review.line,
-      body: formatCommentBody(review),
-      findingIndex,
-    }));
+    .map(({ review, findingIndex }) => {
+      const fingerprint = computeFindingFingerprint(review);
+      return {
+        path: review.filePath,
+        line: review.line,
+        body: `${formatCommentBody(review)}\n\n${fingerprintMarker(fingerprint)}`,
+        findingIndex,
+        fingerprint,
+      };
+    });
 }
 
 function formatCommentBody(review: Finding): string {

@@ -3,6 +3,7 @@ import {
   buildReviewComments,
   formatReviewSummary,
 } from './review-comment.formatter';
+import { extractFingerprint } from './finding-fingerprint';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 
 describe('formatReviewSummary', () => {
@@ -21,6 +22,25 @@ describe('buildReviewComments', () => {
     message: 'msg',
     evidence: [],
   };
+
+  it('코멘트 본문 끝에 지문 마커를 심고 fingerprint 필드와 일치한다', () => {
+    const [comment] = buildReviewComments([baseFinding]);
+
+    expect(comment.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect(comment.body.trimEnd().endsWith('-->')).toBe(true);
+    expect(extractFingerprint(comment.body)).toBe(comment.fingerprint);
+  });
+
+  it('같은 지적은 같은 지문, 다른 지적은 다른 지문이다', () => {
+    const [a, a2, b] = buildReviewComments([
+      baseFinding,
+      { ...baseFinding },
+      { ...baseFinding, title: '다른 지적' },
+    ]);
+
+    expect(a.fingerprint).toBe(a2.fingerprint);
+    expect(a.fingerprint).not.toBe(b.fingerprint);
+  });
 
   it('evidence가 있으면 diff 코드블록으로 감싸 원문 라인이 불릿과 섞이지 않게 한다', () => {
     const [{ body }] = buildReviewComments([
