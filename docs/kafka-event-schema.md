@@ -76,6 +76,7 @@ Kafka 메시지 key는 `reviewJobId`(문자열)를 그대로 사용한다.
 | `source`  | string | 항상 `"github"` (ai-server `ContextFile.source` 기본값과 일치) |
 
 - 후보 파일: 루트의 `DOVI.md`(최우선), `README.md`, `openapi.yaml`/`openapi.yml`/`swagger.json`, `docs/**` 하위 전체 — 모두 "있으면" 포함하는 방식이며, 우선순위 정렬은 ai-server의 `app/review/context.py::_priority`가 담당한다.
+- **규칙 문서**: `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.github/copilot-instructions.md`도 있으면 포함한다("이 프로젝트 규칙을 따른 코드"를 지적하는 오탐을 줄이기 위함). 위 후보와 달리 **PR head가 아니라 base 커밋 기준**으로 읽는다 — 문서 내용이 모델에게 지시로 읽히므로, head에서 읽으면 PR 작성자가 같은 PR에서 규칙 문서를 고쳐 리뷰 지시를 조작할 수 있다(프롬프트 주입 경로). 파일당 50KB, 총합 64KB 상한이며 총량을 넘으면 뒤쪽 파일부터 뺀다. 우선순위·길이 상한은 ai-server의 `app/review/context.py`가 다시 적용한다.
 - secret 경로(`secrets/` 디렉터리, `.env*`, `.pem`/`.p8`/`.key` 확장자, 파일명에 `private-key`/`private_key` 포함)는 `PrDataCollectorService`의 `isSecretPath()`가 1차로 제외한다. ai-server의 `_is_secret()`이 동일 규칙으로 한 번 더 필터링한다.
 - 파일당 200KB(`CONTEXT_FILE_SIZE_LIMIT`) 초과 시 수집 단계에서 제외한다 (ai-server의 8000자/파일, 20000자/전체 truncation과는 별개의 1차 방어).
 
@@ -95,6 +96,12 @@ Kafka 메시지 key는 `reviewJobId`(문자열)를 그대로 사용한다.
 | `promptVersion` | string |                                                                                               |
 
 `owner`, `repo`는 ai-server가 보내지 않으므로 github-app 쪽 타입에도 포함하지 않는다.
+
+**재리뷰 중복 방지(지문)**: github-app은 게시하는 인라인 코멘트 본문 끝에 눈에 보이지 않는 마커 `<!-- dovi:fp={16자리 hex} -->`를 심는다. 재리뷰 결과가 오면 PR에 남은 봇 코멘트의 마커와 새 `reviews[]`의 지문을 비교해, **다시 나온 지적은 지우지도 다시 올리지도 않고**(사용자가 resolve한 스레드가 되살아나지 않는다), 이번에 안 나온 지적(코드가 고쳐짐)의 코멘트만 지우고, 새 지적만 올린다. 답글이 달린 스레드는 항상 보존한다. Redis가 아니라 GitHub 코멘트 자체에 저장되므로 Redis를 잃거나 TTL이 지나도 중복되지 않는다.
+
+- 지문 = `sha256(filePath | 정규화한 title | 정규화한 evidence)`의 앞 16자(정규화는 소문자·공백 축약). **evidence가 있으면 줄 번호를 넣지 않아** 새 커밋으로 줄이 밀려도 같은 지적으로 인식하고, evidence가 없으면 message와 줄 번호까지 넣어 서로 다른 위치의 같은 문구를 구분한다.
+- `reviews[].fingerprint?`(선택): ai-server가 지문을 계산해 보내면(Dovi-ai-server#132) 그 값을 지문으로 쓴다. 없는 기존 이벤트는 위 방식으로 직접 계산하므로 호환된다.
+- 이 기능 이전에 게시된(마커 없는) 코멘트는 기존처럼 정리·재게시된다.
 
 ### `pr.review.failed`
 

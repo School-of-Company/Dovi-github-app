@@ -6,6 +6,8 @@ import type { ReviewJobContext } from '../redis/review-job-context.type';
 import type { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import type { PrimaryReviewStore } from '../redis/primary-review.store';
 import type { ReviewFailureNoticeService } from './review-failure-notice.service';
+import { fingerprintMarker } from './finding-fingerprint';
+import { buildReviewComments } from './review-comment.formatter';
 import type { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
@@ -432,6 +434,146 @@ describe('ReviewOrchestratorService', () => {
     expect(deleteReviewComment).toHaveBeenCalledWith(
       expect.objectContaining({ comment_id: 3 }),
     );
+  });
+
+  describe('재리뷰 시 이미 게시한 지적 중복 방지', () => {
+    const BOT = 'dovi-code-assist[bot]';
+    const finding = (
+      title: string,
+    ): ReviewCompletedPayload['reviews'][number] => ({
+      severity: 'major',
+      confidence: 0.9,
+      filePath: 'a.ts',
+      line: 5,
+      title,
+      message: `${title} 설명`,
+      evidence: [`code for ${title}`],
+    });
+    const fingerprintOf = (title: string): string =>
+      buildReviewComments([finding(title)])[0].fingerprint;
+    const botComment = (
+      id: number,
+      title: string | null,
+      extra: { in_reply_to_id?: number | null; login?: string } = {},
+    ) => ({
+      id,
+      user: { login: extra.login ?? BOT },
+      in_reply_to_id: extra.in_reply_to_id ?? null,
+      body:
+        title === null
+          ? '지문 없는 예전 코멘트'
+          : `본문\n\n${fingerprintMarker(fingerprintOf(title))}`,
+    });
+    const postedTitles = (): string[] => {
+      const calls = createReview.mock.calls as [
+        { comments: { body: string }[] },
+      ][];
+      return calls.flatMap(([arg]) =>
+        arg.comments.map(
+          (c) => /\*\*\[major\] (.+?)\*\*/.exec(c.body)?.[1] ?? '',
+        ),
+      );
+    };
+
+    beforeEach(() => {
+      process.env.GITHUB_BOT_LOGIN = 'dovi-code-assist';
+    });
+
+    it('이번에도 나온 지적은 지우지도 다시 올리지도 않고, 새 지적만 올린다', async () => {
+      paginate.mockResolvedValue([botComment(1, '기존 지적')]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('기존 지적'), finding('새 지적')],
+      });
+
+      expect(deleteReviewComment).not.toHaveBeenCalled();
+      expect(postedTitles()).toEqual(['새 지적']);
+    });
+
+    it('이번에는 안 나온 지적(코드가 고쳐짐)의 코멘트는 지운다', async () => {
+      paginate.mockResolvedValue([botComment(1, '해결된 지적')]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('새 지적')],
+      });
+
+      expect(deleteReviewComment).toHaveBeenCalledWith(
+        expect.objectContaining({ comment_id: 1 }),
+      );
+      expect(postedTitles()).toEqual(['새 지적']);
+    });
+
+    it('답글이 달린 스레드의 지적이 다시 나와도 중복으로 올리지 않는다', async () => {
+      paginate.mockResolvedValue([
+        botComment(1, '기존 지적'),
+        {
+          id: 2,
+          user: { login: 'human' },
+          in_reply_to_id: 1,
+          body: '확인했어요',
+        },
+      ]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('기존 지적')],
+      });
+
+      expect(deleteReviewComment).not.toHaveBeenCalled();
+      expect(postedTitles()).toEqual([]);
+    });
+
+    it('지문이 없는 예전 코멘트는 기존처럼 지우고 새로 올린다 (호환)', async () => {
+      paginate.mockResolvedValue([botComment(1, null)]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('기존 지적')],
+      });
+
+      expect(deleteReviewComment).toHaveBeenCalledWith(
+        expect.objectContaining({ comment_id: 1 }),
+      );
+      expect(postedTitles()).toEqual(['기존 지적']);
+    });
+
+    it('다른 사용자가 남긴 코멘트의 지문은 이미 게시된 것으로 보지 않는다', async () => {
+      paginate.mockResolvedValue([
+        botComment(1, '기존 지적', { login: 'someone-else' }),
+      ]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('기존 지적')],
+      });
+
+      expect(postedTitles()).toEqual(['기존 지적']);
+    });
+
+    it('이전 코멘트 목록 조회가 실패하면 중복 판단 없이 전부 올린다', async () => {
+      paginate.mockRejectedValue(new Error('list failed'));
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('기존 지적'), finding('새 지적')],
+      });
+
+      expect(postedTitles()).toEqual(['기존 지적', '새 지적']);
+    });
+
+    it('모든 지적이 이미 게시돼 있어도 리뷰 본문(요약) 갱신은 진행한다', async () => {
+      paginate.mockResolvedValue([botComment(1, '기존 지적')]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [finding('기존 지적')],
+      });
+
+      expect(createReview).toHaveBeenCalledTimes(1);
+      expect(postedTitles()).toEqual([]);
+    });
   });
 
   it('이전 코멘트 정리 중 에러가 나도 새 리뷰 등록은 계속 진행한다', async () => {
