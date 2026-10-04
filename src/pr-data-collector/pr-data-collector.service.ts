@@ -35,6 +35,18 @@ const CONTEXT_ROOT_CANDIDATES = [
 const CONTEXT_DOCS_PREFIX = 'docs/';
 const CONTEXT_FILE_SIZE_LIMIT = 200 * 1024;
 
+// 팀 규칙 문서. "이 프로젝트 규칙을 따른 코드"를 지적하는 오탐을 줄이려고 리뷰 기준으로
+// 함께 보낸다. 순서가 우선순위다(총량 예산을 넘으면 뒤쪽부터 뺀다).
+const RULE_DOC_CANDIDATES = [
+  'AGENTS.md',
+  'CLAUDE.md',
+  'CONTRIBUTING.md',
+  '.github/copilot-instructions.md',
+];
+// 규칙 문서는 모델에게 지시로 읽히는 텍스트라 일반 컨텍스트 파일(200KB)보다 훨씬 작게 둔다.
+const RULE_DOC_SIZE_LIMIT = 50 * 1024;
+const RULE_DOCS_TOTAL_BUDGET = 64 * 1024;
+
 // ai-server의 app/review/chunking.py::_EXTENSION_LANGUAGE와 동일한 목록.
 // AST 파싱을 지원하지 않는 확장자는 content를 보내봐야 ai-server가 버리므로
 // API 호출/페이로드 크기 절약을 위해 여기서 미리 거른다.
@@ -91,11 +103,12 @@ export class PrDataCollectorService {
     const octokit =
       await this.installationTokenManager.getOctokit(installationId);
 
-    const [diffResult, changedFilesResult, contextFilesResult] =
+    const [diffResult, changedFilesResult, contextFilesResult, ruleDocs] =
       await Promise.allSettled([
         this.fetchDiff(octokit, owner, repo, prNumber),
         this.fetchChangedFiles(octokit, owner, repo, prNumber, headSha),
         this.fetchContextFiles(octokit, owner, repo, headSha),
+        this.fetchRuleDocs(octokit, owner, repo, baseSha),
       ]);
 
     if (diffResult.status === 'rejected') throw diffResult.reason;
@@ -108,7 +121,11 @@ export class PrDataCollectorService {
     if (diff === null) return null;
 
     const changedFiles = changedFilesResult.value;
-    const contextFiles = contextFilesResult.value;
+    // 규칙 문서는 보조 정보라 읽기에 실패해도(fetchRuleDocs는 던지지 않지만) 리뷰를 막지 않는다.
+    const contextFiles = [
+      ...contextFilesResult.value,
+      ...(ruleDocs.status === 'fulfilled' ? ruleDocs.value : []),
+    ];
 
     return {
       reviewJobId: `${repositoryId}:${prNumber}:${headSha}`,
@@ -287,6 +304,65 @@ export class PrDataCollectorService {
     }
 
     return sortByReviewPriority(changedFiles);
+  }
+
+  // 규칙 문서는 **PR의 base 커밋** 기준으로 읽는다. 문서 내용은 모델에게 지시로 읽히는데, PR
+  // head에서 읽으면 PR 작성자가 같은 PR에서 규칙 문서를 고쳐 리뷰 지시를 조작할 수 있다(프롬프트
+  // 주입 경로). base는 이 PR이 바꿀 수 없는, 이미 병합된 신뢰 가능한 버전이다. DOVI.md의 opt-in을
+  // default_branch 기준으로 읽는 것과 같은 원칙이다.
+  private async fetchRuleDocs(
+    octokit: Octokit,
+    owner: string,
+    repo: string,
+    baseSha: string,
+  ): Promise<ContextFile[]> {
+    const docs = await Promise.all(
+      RULE_DOC_CANDIDATES.map(async (path): Promise<ContextFile | null> => {
+        const result = await fetchFileContent(
+          octokit,
+          owner,
+          repo,
+          baseSha,
+          path,
+          RULE_DOC_SIZE_LIMIT,
+        );
+        if (result.content === null) {
+          // 대부분의 레포에는 없는 파일이라 404는 조용히 넘긴다.
+          if (result.skipReason && result.skipReason !== 'not-found') {
+            this.logger.warn(
+              `규칙 문서 ${path} 제외: ${describeSkipReason(
+                result.skipReason,
+                RULE_DOC_SIZE_LIMIT,
+                result.size,
+              )}`,
+            );
+          }
+          return null;
+        }
+        const masked = maskSecrets(result.content);
+        if (masked.count > 0) {
+          this.logger.warn(`규칙 문서 ${path} 시크릿 마스킹 ${masked.count}건`);
+        }
+        return { path, content: masked.text, source: 'github' };
+      }),
+    );
+
+    // 우선순위(후보 순서)대로 총량 예산 안에서만 싣는다.
+    const kept: ContextFile[] = [];
+    let total = 0;
+    for (const doc of docs) {
+      if (doc === null) continue;
+      const bytes = Buffer.byteLength(doc.content, 'utf-8');
+      if (total + bytes > RULE_DOCS_TOTAL_BUDGET) {
+        this.logger.warn(
+          `규칙 문서 총량 예산(${RULE_DOCS_TOTAL_BUDGET} bytes) 초과로 ${doc.path} 제외`,
+        );
+        continue;
+      }
+      total += bytes;
+      kept.push(doc);
+    }
+    return kept;
   }
 
   private async fetchContextFiles(
