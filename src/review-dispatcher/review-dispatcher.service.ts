@@ -42,6 +42,15 @@ export class ReviewDispatcherService {
       return;
     }
 
+    // 증분 리뷰인데 리뷰할 파일이 남지 않았으면(제외 설정 파일만 바뀜 등) AI 서버를 부르지 않는다.
+    // 이전 리뷰와 코멘트가 그대로 유효하다.
+    if (payload.incremental && payload.changedFiles.length === 0) {
+      this.logger.log(
+        `증분 리뷰 대상 파일 없음, AI 요청 생략: reviewJobId=${reviewJobId} previousHeadSha=${payload.previousHeadSha}`,
+      );
+      return;
+    }
+
     // 수집하는 동안 PR이 닫혔거나 새 커밋이 올라왔으면 발행하지 않는다. 큐에 쌓이면 AI
     // 서버(직렬)가 헛돈 리뷰를 하느라 다른 PR이 밀린다. 이미 발행된 요청은 되돌릴 수 없고,
     // 그 결과는 게시 단계(ReviewOrchestratorService)가 걸러낸다.
@@ -60,6 +69,12 @@ export class ReviewDispatcherService {
     const dispatchedAt = Date.now();
     const measuredContext: ReviewJobContext = {
       ...context,
+      ...(payload.incremental && payload.previousHeadSha
+        ? {
+            incrementalBase: payload.previousHeadSha,
+            incrementalPaths: payload.changedFiles.map((f) => f.filePath),
+          }
+        : {}),
       dispatchedAt,
       files: payload.changedFiles.length,
       patchBytes: payload.changedFiles.reduce(

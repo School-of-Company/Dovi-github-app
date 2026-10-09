@@ -151,6 +151,20 @@ export function appendUnreviewedFiles(
   );
 }
 
+// 증분 리뷰(#94)는 리뷰 본문(= 요약)이 이번에 본 파일만 다룬다. 사용자가 PR 전체를 본 것으로
+// 오해하지 않게 범위를 밝힌다.
+export function appendIncrementalNotice(
+  body: string,
+  previousHeadSha: string,
+  fileCount: number,
+): string {
+  return (
+    `${body}\n\n---\n\n` +
+    `> 증분 리뷰: 이전 리뷰(\`${previousHeadSha.slice(0, 7)}\`) 이후 바뀐 ${fileCount}개 파일만 검토했습니다. ` +
+    `다른 파일의 이전 코멘트는 그대로 유지됩니다.`
+  );
+}
+
 // findingIndex는 원본 payload.reviews 배열 내 인덱스를 그대로 보존한다 —
 // review-orchestrator가 생성된 GitHub 코멘트 id를 이 인덱스로 역매핑해 저장한다
 // (리뷰 반영 여부 이벤트의 findingIndex로 쓰기 위함). GitHub API로는 전송하지 않는다.

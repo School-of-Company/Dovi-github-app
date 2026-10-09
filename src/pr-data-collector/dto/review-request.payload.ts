@@ -38,4 +38,8 @@ export interface ReviewRequestPayload {
   contextFiles: ContextFile[];
   changedFiles: ChangedFile[];
   replyContext?: ReplyContext;
+  // 증분 리뷰(#94)일 때만 채워진다. changedFiles는 previousHeadSha 이후 바뀐 파일만이다.
+  // ai-server는 아직 읽지 않는다(없는 필드는 무시) — 도비의 발행·게시 단계가 쓴다.
+  incremental?: boolean;
+  previousHeadSha?: string;
 }

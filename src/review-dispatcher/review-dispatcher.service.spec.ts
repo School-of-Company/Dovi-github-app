@@ -100,6 +100,60 @@ describe('ReviewDispatcherService', () => {
     },
   );
 
+  describe('증분 리뷰 (#94)', () => {
+    const incrementalPayload: ReviewRequestPayload = {
+      ...payload,
+      incremental: true,
+      previousHeadSha: 'prev-sha',
+      changedFiles: [{ filePath: 'a.ts', status: 'modified' }],
+    };
+
+    beforeEach(() => {
+      idempotencyStore.exists.mockResolvedValue(false);
+      jobStateStore.get.mockResolvedValue(null);
+    });
+
+    it('리뷰할 파일이 남지 않았으면 AI 요청을 보내지 않고 상태도 남기지 않는다', async () => {
+      await service.dispatch(
+        { ...incrementalPayload, changedFiles: [] },
+        context,
+      );
+
+      expect(kafkaProducer.send).not.toHaveBeenCalled();
+      expect(jobStateStore.set).not.toHaveBeenCalled();
+      expect(reviewJobContextStore.set).not.toHaveBeenCalled();
+    });
+
+    it('전체 리뷰의 빈 changedFiles는 기존대로 발행한다 (증분이 아니면 건너뛰지 않는다)', async () => {
+      await service.dispatch(payload, context);
+
+      expect(kafkaProducer.send).toHaveBeenCalled();
+    });
+
+    it('게시 단계가 쓸 기준 커밋과 리뷰한 파일 경로를 컨텍스트에 남긴다', async () => {
+      await service.dispatch(incrementalPayload, context);
+
+      expect(reviewJobContextStore.set).toHaveBeenCalledWith(
+        payload.reviewJobId,
+        expect.objectContaining({
+          incrementalBase: 'prev-sha',
+          incrementalPaths: ['a.ts'],
+        }),
+      );
+      expect(kafkaProducer.send).toHaveBeenCalled();
+    });
+
+    it('전체 리뷰는 증분 필드를 컨텍스트에 남기지 않는다', async () => {
+      await service.dispatch(payload, context);
+
+      const saved = (
+        reviewJobContextStore.set.mock.calls[0] as [string, ReviewJobContext]
+      )[1];
+      expect(saved.incrementalBase).toBeUndefined();
+      expect(saved.incrementalPaths).toBeUndefined();
+    });
+  });
+
   it('이미 처리된 job은 PR 상태를 조회하지 않고 먼저 스킵한다', async () => {
     idempotencyStore.exists.mockResolvedValue(true);
 
