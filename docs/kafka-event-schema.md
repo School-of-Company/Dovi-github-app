@@ -232,7 +232,7 @@ review latency  reviewJobId=… outcome=published collect=2310ms awaitAi=184000m
 
 - `collect`는 수집을 **시작한 시점**부터라서, `/dovi review`·멘션은 권한·쿨다운 확인 시간이 빠진다.
 - `outcome=error`는 Kafka 재전달로 같은 job이 다시 처리될 때마다 한 줄씩 남는다.
-- 진행 중 job 목록은 Redis(`review:inflight`)에 시각을 점수로 둔 정렬 집합으로 두고, 1시간 지난 항목은 센서에서 제외한다(결과를 못 받은 채 남은 항목이 쌓이지 않게).
+- 진행 중 job 목록은 Redis(`review:inflight`)에 시각을 점수로 둔 정렬 집합으로 두고, 1시간 지난 항목은 집계에서 제외한다(결과를 못 받은 채 남은 항목이 쌓이지 않게).
 - 이 기능 이전에 저장된 컨텍스트(단계 시각 없음)는 `latency` 줄만 건너뛴다.
 
 ## 요약 원칙
