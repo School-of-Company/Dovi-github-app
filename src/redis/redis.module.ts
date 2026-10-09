@@ -12,6 +12,7 @@ import { ReviewFailureCommentStore } from './review-failure-comment.store';
 import { AlertThrottleStore } from './alert-throttle.store';
 import { UnreviewedFilesStore } from './unreviewed-files.store';
 import { ReviewInflightStore } from './review-inflight.store';
+import { ReviewSettingsStore } from './review-settings.store';
 import { ReviewCommandCooldownStore } from './review-command-cooldown.store';
 import { REDIS_CLIENT } from './redis.constants';
 
@@ -45,6 +46,7 @@ import { REDIS_CLIENT } from './redis.constants';
     AlertThrottleStore,
     UnreviewedFilesStore,
     ReviewInflightStore,
+    ReviewSettingsStore,
   ],
   exports: [
     REDIS_CLIENT,
@@ -61,6 +63,7 @@ import { REDIS_CLIENT } from './redis.constants';
     AlertThrottleStore,
     UnreviewedFilesStore,
     ReviewInflightStore,
+    ReviewSettingsStore,
   ],
 })
 export class RedisModule {}

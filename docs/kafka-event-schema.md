@@ -76,6 +76,7 @@ Kafka 메시지 key는 `reviewJobId`(문자열)를 그대로 사용한다.
 | `content` | string | 파일 원문 (UTF-8)                                              |
 | `source`  | string | 항상 `"github"` (ai-server `ContextFile.source` 기본값과 일치) |
 
+- (참고) `DOVI.md`의 `## Review Settings`(파일 include/exclude, 최소 심각도, 인라인 상한)는 이벤트에 실리지 않고 github-app 안에서만 쓰인다 — [review-settings.md](./review-settings.md).
 - 후보 파일: 루트의 `DOVI.md`(최우선), `README.md`, `openapi.yaml`/`openapi.yml`/`swagger.json`, `docs/**` 하위 전체 — 모두 "있으면" 포함하는 방식이며, 우선순위 정렬은 ai-server의 `app/review/context.py::_priority`가 담당한다.
 - **규칙 문서**: `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.github/copilot-instructions.md`도 있으면 포함한다("이 프로젝트 규칙을 따른 코드"를 지적하는 오탐을 줄이기 위함). 위 후보와 달리 **PR head가 아니라 base 커밋 기준**으로 읽는다 — 문서 내용이 모델에게 지시로 읽히므로, head에서 읽으면 PR 작성자가 같은 PR에서 규칙 문서를 고쳐 리뷰 지시를 조작할 수 있다(프롬프트 주입 경로). 파일당 50KB, 총합 64KB 상한이며 총량을 넘으면 뒤쪽 파일부터 뺀다. 우선순위·길이 상한은 ai-server의 `app/review/context.py`가 다시 적용한다.
 - secret 경로(`secrets/` 디렉터리, `.env*`, `.pem`/`.p8`/`.key` 확장자, 파일명에 `private-key`/`private_key` 포함)는 `PrDataCollectorService`의 `isSecretPath()`가 1차로 제외한다. ai-server의 `_is_secret()`이 동일 규칙으로 한 번 더 필터링한다.

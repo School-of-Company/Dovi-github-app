@@ -11,6 +11,7 @@ import { buildReviewComments } from './review-comment.formatter';
 import type { AlertThrottleStore } from '../redis/alert-throttle.store';
 import type { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
 import type { ReviewInflightStore } from '../redis/review-inflight.store';
+import type { ReviewSettingsStore } from '../redis/review-settings.store';
 import type { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
@@ -40,6 +41,7 @@ describe('ReviewOrchestratorService', () => {
   let alertThrottle: { acquire: jest.Mock };
   let unreviewedFilesStore: { get: jest.Mock };
   let reviewInflightStore: { leave: jest.Mock };
+  let reviewSettingsStore: { get: jest.Mock };
   let service: ReviewOrchestratorService;
 
   const context: ReviewJobContext = {
@@ -107,6 +109,7 @@ describe('ReviewOrchestratorService', () => {
     alertThrottle = { acquire: jest.fn().mockResolvedValue(true) };
     unreviewedFilesStore = { get: jest.fn().mockResolvedValue([]) };
     reviewInflightStore = { leave: jest.fn().mockResolvedValue(1) };
+    reviewSettingsStore = { get: jest.fn().mockResolvedValue({}) };
     reviewFailureNotice = {
       notify: jest.fn().mockResolvedValue(undefined),
       clear: jest.fn().mockResolvedValue(undefined),
@@ -123,6 +126,7 @@ describe('ReviewOrchestratorService', () => {
       alertThrottle as unknown as AlertThrottleStore,
       unreviewedFilesStore as unknown as UnreviewedFilesStore,
       reviewInflightStore as unknown as ReviewInflightStore,
+      reviewSettingsStore as unknown as ReviewSettingsStore,
     );
   });
 
@@ -335,6 +339,151 @@ describe('ReviewOrchestratorService', () => {
     expect(dicoshot.sendCustom).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'GitHub 리뷰 등록 실패' }),
     );
+  });
+
+  describe('레포별 리뷰 설정 (#85)', () => {
+    const BOT = 'dovi-code-assist[bot]';
+    const finding = (
+      title: string,
+      severity: ReviewCompletedPayload['reviews'][number]['severity'],
+    ): ReviewCompletedPayload['reviews'][number] => ({
+      severity,
+      confidence: 0.9,
+      filePath: 'a.ts',
+      line: 5,
+      title,
+      message: `${title} 설명`,
+      evidence: [`code for ${title}`],
+    });
+    const fingerprintOf = (title: string): string =>
+      buildReviewComments([finding(title, 'minor')])[0].fingerprint;
+    const postedBot = (id: number, title: string) => ({
+      id,
+      user: { login: BOT },
+      in_reply_to_id: null,
+      body: `본문\n\n${fingerprintMarker(fingerprintOf(title))}`,
+    });
+    const reviewArg = () =>
+      (
+        createReview.mock.calls[0] as [
+          { body: string; comments: { body: string }[] },
+        ]
+      )[0];
+    const inlineTitles = (): string[] =>
+      reviewArg().comments.map(
+        (c) => /\*\*\[\w+\] (.+?)\*\*/.exec(c.body)?.[1] ?? '',
+      );
+
+    beforeEach(() => {
+      process.env.GITHUB_BOT_LOGIN = 'dovi-code-assist';
+    });
+
+    const reviews = [
+      finding('치명', 'critical'),
+      finding('주요', 'major'),
+      finding('사소', 'minor'),
+      finding('제안', 'suggestion'),
+    ];
+
+    it('설정이 없으면 모든 지적을 인라인으로 게시하고 상한 섹션도 없다 (기존 동작)', async () => {
+      await service.handle({ ...completedPayload, reviews });
+
+      expect(inlineTitles()).toEqual(['치명', '주요', '사소', '제안']);
+      expect(reviewArg().body).not.toContain('인라인 코멘트 상한');
+    });
+
+    it('결과 이벤트의 (저장소, PR, headSha)로 설정을 조회한다', async () => {
+      await service.handle(completedPayload);
+
+      expect(reviewSettingsStore.get).toHaveBeenCalledWith(
+        completedPayload.repositoryId,
+        completedPayload.prNumber,
+        completedPayload.headSha,
+      );
+    });
+
+    it('minSeverity 미만의 지적은 게시하지 않는다', async () => {
+      reviewSettingsStore.get.mockResolvedValue({ minSeverity: 'major' });
+
+      await service.handle({ ...completedPayload, reviews });
+
+      expect(inlineTitles()).toEqual(['치명', '주요']);
+      expect(reviewArg().body).not.toContain('사소');
+    });
+
+    it('minSeverity를 올리면 이전에 달린 낮은 심각도 코멘트는 정리된다', async () => {
+      reviewSettingsStore.get.mockResolvedValue({ minSeverity: 'major' });
+      paginate.mockResolvedValue([postedBot(1, '사소')]);
+
+      await service.handle({ ...completedPayload, reviews });
+
+      expect(deleteReviewComment).toHaveBeenCalledWith(
+        expect.objectContaining({ comment_id: 1 }),
+      );
+    });
+
+    it('maxInlineComments를 넘는 지적은 버리지 않고 본문에 모으며, 심각도가 높은 것이 인라인에 남는다', async () => {
+      reviewSettingsStore.get.mockResolvedValue({ maxInlineComments: 2 });
+
+      await service.handle({ ...completedPayload, reviews });
+
+      expect(inlineTitles()).toEqual(['치명', '주요']);
+      const body = reviewArg().body;
+      expect(body).toContain('### 인라인 코멘트 상한을 넘은 지적사항');
+      expect(body).toContain('maxInlineComments: 2');
+      expect(body).toContain('사소');
+      expect(body).toContain('제안');
+    });
+
+    it('상한은 PR 전체 기준이라 이미 게시돼 남은 코멘트만큼 새로 달 수 있는 칸이 줄어든다', async () => {
+      reviewSettingsStore.get.mockResolvedValue({ maxInlineComments: 2 });
+      paginate.mockResolvedValue([postedBot(1, '치명')]);
+
+      await service.handle({
+        ...completedPayload,
+        reviews: [
+          finding('치명', 'critical'),
+          finding('주요', 'major'),
+          finding('사소', 'minor'),
+        ],
+      });
+
+      // '치명'은 이미 게시돼 있어 1칸을 쓰고, 남은 1칸에 '주요'만 새로 달린다.
+      expect(inlineTitles()).toEqual(['주요']);
+      expect(reviewArg().body).toContain('사소');
+    });
+
+    it('상한 이하면 본문 섹션을 만들지 않는다', async () => {
+      reviewSettingsStore.get.mockResolvedValue({ maxInlineComments: 10 });
+
+      await service.handle({ ...completedPayload, reviews });
+
+      expect(inlineTitles()).toHaveLength(4);
+      expect(reviewArg().body).not.toContain('인라인 코멘트 상한');
+    });
+
+    it('minSeverity와 maxInlineComments를 함께 적용한다', async () => {
+      reviewSettingsStore.get.mockResolvedValue({
+        minSeverity: 'minor',
+        maxInlineComments: 1,
+      });
+
+      await service.handle({ ...completedPayload, reviews });
+
+      expect(inlineTitles()).toEqual(['치명']);
+      const body = reviewArg().body;
+      expect(body).toContain('주요');
+      expect(body).toContain('사소');
+      expect(body).not.toContain('제안'); // minSeverity=minor 미만은 아예 게시하지 않는다
+    });
+
+    it('설정 조회가 실패해도 필터 없이 리뷰를 게시한다 (설정 때문에 리뷰를 막지 않는다)', async () => {
+      reviewSettingsStore.get.mockRejectedValue(new Error('redis down'));
+
+      await service.handle({ ...completedPayload, reviews });
+
+      expect(inlineTitles()).toHaveLength(4);
+    });
   });
 
   describe('리뷰하지 못한 파일 안내 (#86)', () => {

@@ -19,6 +19,9 @@ import { PrimaryReviewStore } from '../redis/primary-review.store';
 import { AlertThrottleStore } from '../redis/alert-throttle.store';
 import { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
 import { ReviewInflightStore } from '../redis/review-inflight.store';
+import { ReviewSettingsStore } from '../redis/review-settings.store';
+import { capInlineComments, meetsMinSeverity } from '../common/review-settings';
+import type { PublishSettings } from '../common/review-settings';
 import { formatReviewLatency } from '../common/review-latency';
 import type { ReviewOutcome } from '../common/review-latency';
 import { ReviewFailureNoticeService } from './review-failure-notice.service';
@@ -27,6 +30,7 @@ import { ReviewFreshnessService } from '../review-freshness/review-freshness.ser
 import {
   appendUnanchoredFindings,
   appendUnreviewedFiles,
+  inlineLimitSection,
   buildReviewComments,
   formatReviewSummary,
 } from './review-comment.formatter';
@@ -65,6 +69,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     private readonly alertThrottle: AlertThrottleStore,
     private readonly unreviewedFilesStore: UnreviewedFilesStore,
     private readonly reviewInflightStore: ReviewInflightStore,
+    private readonly reviewSettingsStore: ReviewSettingsStore,
   ) {}
 
   async handle(
@@ -161,7 +166,22 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     );
 
     try {
-      const allComments = buildReviewComments(payload.reviews);
+      const settings = await this.findPublishSettings(payload);
+
+      // 레포 설정 minSeverity 미만의 지적은 게시하지 않는다. 지문 계산(아래 정리·중복 판단)보다
+      // 먼저 걸러서, 최소 심각도를 올렸을 때 이전에 달린 낮은 심각도 코멘트가 정리되게 한다.
+      const builtComments = buildReviewComments(payload.reviews);
+      const allComments =
+        settings.minSeverity === undefined
+          ? builtComments
+          : builtComments.filter((comment) =>
+              meetsMinSeverity(comment.severity, settings.minSeverity!),
+            );
+      if (allComments.length < builtComments.length) {
+        this.logger.log(
+          `최소 심각도(${settings.minSeverity})에 못 미쳐 ${builtComments.length - allComments.length}건 생략: PR #${payload.prNumber} reviewJobId=${payload.reviewJobId}`,
+        );
+      }
 
       // 이전에 게시한 코멘트를 정리하되, 이번에도 다시 나온 지적(같은 지문)은 지우지 않고
       // 그대로 둔다. 지우고 다시 올리면 사용자가 해결(resolve)한 스레드가 되살아나고, 답글이
@@ -183,18 +203,46 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
 
       // 줄이 PR diff에 없는 finding은 GitHub가 리뷰 전체를 422로 거부하게 만들므로,
       // 게시 전에 걸러 내 인라인으로 달 수 있는 것만 남기고 나머지는 본문에 싣는다.
-      const { inline: formattedComments, demoted } =
-        await this.partitionByDiffLines(
-          octokit,
-          context,
-          payload,
-          freshComments,
+      const { inline: anchorable, demoted } = await this.partitionByDiffLines(
+        octokit,
+        context,
+        payload,
+        freshComments,
+      );
+
+      // 레포 설정 maxInlineComments: PR 전체의 인라인 상한이므로 이미 게시돼 남아 있는 코멘트를
+      // 뺀 만큼만 새로 단다. 넘는 지적은 버리지 않고 본문에 모은다(심각도가 높은 것을 인라인에 우선).
+      const remainingSlots =
+        settings.maxInlineComments === undefined
+          ? undefined
+          : Math.max(0, settings.maxInlineComments - alreadyPosted.size);
+      const { inline: formattedComments, overflow } = capInlineComments(
+        anchorable,
+        remainingSlots,
+      );
+      if (overflow.length > 0) {
+        this.logger.log(
+          `인라인 상한(${settings.maxInlineComments})을 넘어 ${overflow.length}건을 본문으로 이동: PR #${payload.prNumber} reviewJobId=${payload.reviewJobId}`,
         );
+      }
+
+      const link = {
+        owner: context.owner,
+        repo: context.repo,
+        sha: payload.headSha,
+      };
       const reviewBody = appendUnreviewedFiles(
         appendUnanchoredFindings(
-          formatReviewSummary(payload.summary),
-          demoted,
-          { owner: context.owner, repo: context.repo, sha: payload.headSha },
+          appendUnanchoredFindings(
+            formatReviewSummary(payload.summary),
+            demoted,
+            link,
+          ),
+          overflow,
+          link,
+          settings.maxInlineComments === undefined
+            ? undefined
+            : inlineLimitSection(settings.maxInlineComments),
         ),
         await this.findUnreviewedFiles(payload),
       );
@@ -656,6 +704,26 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         `(${REASON_DESCRIPTIONS[payload.reason] ?? '알 수 없는 사유'})`,
       color: 'danger',
     });
+  }
+
+  // 레포 설정은 보조 정보라 조회가 실패해도 리뷰는 설정 없이(필터 없이) 게시한다. 설정을 못 읽어
+  // 리뷰 전체를 막는 것보다 필터가 한 번 빠지는 편이 낫다.
+  private async findPublishSettings(
+    payload: ReviewCompletedPayload,
+  ): Promise<PublishSettings> {
+    try {
+      return await this.reviewSettingsStore.get(
+        payload.repositoryId,
+        payload.prNumber,
+        payload.headSha,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `레포 설정 조회 실패, 필터 없이 게시: PR #${payload.prNumber}`,
+        err,
+      );
+      return {};
+    }
   }
 
   // 미검토 파일 안내는 보조 정보라 조회가 실패해도 리뷰 게시는 막지 않는다(안내만 빠진다).
