@@ -211,6 +211,30 @@ ai-server → github-app. `SandboxProbeResultConsumerService`(독립 컨슈머 �
 
 github-app은 이 이벤트를 받으면 **메인 리뷰 코멘트(`pulls.createReview`)는 건드리지 않고**, PR 대화창에 마커 주석(`<!-- dovi:sandbox-probe -->`) 기반 sticky 코멘트를 upsert한다(`issues.createComment`/`issues.updateComment`) — 재푸시마다 코멘트가 쌓이지 않도록 항상 같은 코멘트를 갱신하며, 상태별 이모지(✅/🐛/⚠️)를 붙인다. 게시 전 evidence는 본문에 등장하는 최장 백틱 런보다 긴 코드펜스로 감싸고 `@` 멘션을 무력화(zero-width space 삽입)한다. LLM은 개입하지 않는다 — 요약 문구는 프로브 스크립트의 고정 템플릿이다. 결과의 `headSha`가 PR의 현재 head와 다르거나(워커가 도는 동안 새 커밋이 푸시됨) PR이 닫혔으면 오래된 결과이므로 게시하지 않는다 — 새 커밋의 결과가 먼저 도착해 코멘트를 갱신했을 수도 있어 덮어쓰지 않기 위함.
 
+## 리뷰 지연 로그
+
+리뷰 한 건이 1.5~8분 걸리는데 어느 단계가 얼마를 차지하는지 알아야 최적화 대상을 정할 수 있다. 서버 로그에 아래 두 줄이 남는다(`grep "review dispatched\|review latency"`).
+
+```
+review dispatched reviewJobId=… collect=2310ms files=12 patchBytes=34567 inflight=2
+review latency  reviewJobId=… outcome=published collect=2310ms awaitAi=184000ms publish=1200ms total=187510ms files=12 patchBytes=34567 inflight=1
+```
+
+| 필드                  | 의미                                                                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `collect`             | 수집 시작 → `pr.review.requested` 발행 직전. GitHub에서 데이터를 모으는 시간                                                                                 |
+| `awaitAi`             | 발행 → 결과 수신. **큐 대기 + AI 추론**(내부 분해는 ai-server가 측정)                                                                                        |
+| `publish`             | 결과 수신 → GitHub 리뷰 게시 완료                                                                                                                            |
+| `total`               | 수집 시작 → 게시 완료                                                                                                                                        |
+| `files`, `patchBytes` | 요청에 실린 변경 파일 수, patch 총 바이트 — 큰 PR이 오래 걸리는지 상관을 본다                                                                                |
+| `inflight`            | 발행 시점(`dispatched` 줄)에는 자신을 포함해 진행 중이던 job 수, 결과 처리 후(`latency` 줄)에는 남은 진행 중 job 수. AI 서버가 직렬이라 대기 시간을 설명한다 |
+| `outcome`             | `published`(게시), `failed`(AI 실패 이벤트 또는 4xx 영구 실패), `stale`(오래된 결과라 건너뜀), `error`(재시도될 오류)                                        |
+
+- `collect`는 수집을 **시작한 시점**부터라서, `/dovi review`·멘션은 권한·쿨다운 확인 시간이 빠진다.
+- `outcome=error`는 Kafka 재전달로 같은 job이 다시 처리될 때마다 한 줄씩 남는다.
+- 진행 중 job 목록은 Redis(`review:inflight`)에 시각을 점수로 둔 정렬 집합으로 두고, 1시간 지난 항목은 센서에서 제외한다(결과를 못 받은 채 남은 항목이 쌓이지 않게).
+- 이 기능 이전에 저장된 컨텍스트(단계 시각 없음)는 `latency` 줄만 건너뛴다.
+
 ## 요약 원칙
 
 1. 토픽 이름: `도메인.대상.이벤트` (dot-separated).

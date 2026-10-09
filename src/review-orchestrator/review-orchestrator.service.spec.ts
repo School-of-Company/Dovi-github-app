@@ -10,6 +10,7 @@ import { fingerprintMarker } from './finding-fingerprint';
 import { buildReviewComments } from './review-comment.formatter';
 import type { AlertThrottleStore } from '../redis/alert-throttle.store';
 import type { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
+import type { ReviewInflightStore } from '../redis/review-inflight.store';
 import type { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
@@ -38,6 +39,7 @@ describe('ReviewOrchestratorService', () => {
   let reviewFreshness: { findStaleReason: jest.Mock };
   let alertThrottle: { acquire: jest.Mock };
   let unreviewedFilesStore: { get: jest.Mock };
+  let reviewInflightStore: { leave: jest.Mock };
   let service: ReviewOrchestratorService;
 
   const context: ReviewJobContext = {
@@ -104,6 +106,7 @@ describe('ReviewOrchestratorService', () => {
     reviewFreshness = { findStaleReason: jest.fn().mockResolvedValue(null) };
     alertThrottle = { acquire: jest.fn().mockResolvedValue(true) };
     unreviewedFilesStore = { get: jest.fn().mockResolvedValue([]) };
+    reviewInflightStore = { leave: jest.fn().mockResolvedValue(1) };
     reviewFailureNotice = {
       notify: jest.fn().mockResolvedValue(undefined),
       clear: jest.fn().mockResolvedValue(undefined),
@@ -119,6 +122,7 @@ describe('ReviewOrchestratorService', () => {
       reviewFreshness as unknown as ReviewFreshnessService,
       alertThrottle as unknown as AlertThrottleStore,
       unreviewedFilesStore as unknown as UnreviewedFilesStore,
+      reviewInflightStore as unknown as ReviewInflightStore,
     );
   });
 
@@ -397,6 +401,98 @@ describe('ReviewOrchestratorService', () => {
 
       expect(createReview).toHaveBeenCalledTimes(1);
       expect(reviewBodyOf()).not.toContain('리뷰하지 못한 파일');
+    });
+  });
+
+  describe('단계별 지연 로그 (#93)', () => {
+    const measured = {
+      ...context,
+      collectStartedAt: 1_000,
+      dispatchedAt: 4_000,
+      files: 3,
+      patchBytes: 900,
+    };
+    let log: jest.SpyInstance;
+    const latencyLines = (): string[] =>
+      (log.mock.calls as unknown[][])
+        .map((call) => String(call[0]))
+        .filter((line) => line.startsWith('review latency'));
+
+    beforeEach(() => {
+      reviewJobContextStore.get.mockResolvedValue(measured);
+      log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+    });
+    afterEach(() => log.mockRestore());
+
+    it('게시에 성공하면 outcome=published와 구간·요청 크기·진행 중 job 수를 남긴다', async () => {
+      await service.handle(completedPayload);
+
+      expect(latencyLines()).toHaveLength(1);
+      expect(latencyLines()[0]).toMatch(
+        /outcome=published collect=3000ms awaitAi=\d+ms publish=\d+ms total=\d+ms files=3 patchBytes=900 inflight=1/,
+      );
+      expect(reviewInflightStore.leave).toHaveBeenCalledWith(
+        completedPayload.reviewJobId,
+      );
+    });
+
+    it('실패 이벤트도 outcome=failed로 남긴다', async () => {
+      await service.handle(failedPayload);
+
+      expect(latencyLines()[0]).toContain('outcome=failed');
+    });
+
+    it('오래되어 건너뛴 결과는 outcome=stale로 남긴다', async () => {
+      reviewFreshness.findStaleReason.mockResolvedValue('closed');
+
+      await service.handle(completedPayload);
+
+      expect(latencyLines()[0]).toContain('outcome=stale');
+    });
+
+    it('4xx로 영구 실패하면 outcome=failed로 남기고 진행 중에서 뺀다', async () => {
+      createReview.mockRejectedValue(makeHttpError(422));
+
+      await service.handle(completedPayload);
+
+      expect(latencyLines()[0]).toContain('outcome=failed');
+      expect(reviewInflightStore.leave).toHaveBeenCalled();
+    });
+
+    it('재시도될 오류는 outcome=error로 남기고, 아직 진행 중이므로 진행 중에서 빼지 않는다', async () => {
+      createReview.mockRejectedValue(makeHttpError(500));
+
+      await expect(service.handle(completedPayload)).rejects.toBeDefined();
+
+      expect(latencyLines()[0]).toContain('outcome=error');
+      expect(latencyLines()[0]).not.toContain('inflight=');
+      expect(reviewInflightStore.leave).not.toHaveBeenCalled();
+    });
+
+    it('단계 시각이 없는 예전 컨텍스트는 로그만 건너뛰고 리뷰는 정상 게시한다', async () => {
+      reviewJobContextStore.get.mockResolvedValue(context);
+
+      await service.handle(completedPayload);
+
+      expect(latencyLines()).toHaveLength(0);
+      expect(createReview).toHaveBeenCalledTimes(1);
+    });
+
+    it('진행 중 기록(Redis)이 실패해도 리뷰 결과 처리는 영향이 없다', async () => {
+      reviewInflightStore.leave.mockRejectedValue(new Error('redis down'));
+
+      await expect(service.handle(completedPayload)).resolves.toBeUndefined();
+
+      expect(createReview).toHaveBeenCalledTimes(1);
+    });
+
+    it('컨텍스트가 없으면(TTL 만료) 지연 로그 없이 스킵한다', async () => {
+      reviewJobContextStore.get.mockResolvedValue(null);
+
+      await service.handle(completedPayload);
+
+      expect(latencyLines()).toHaveLength(0);
+      expect(reviewInflightStore.leave).not.toHaveBeenCalled();
     });
   });
 
