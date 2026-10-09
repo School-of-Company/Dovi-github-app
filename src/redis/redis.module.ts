@@ -11,6 +11,9 @@ import { SandboxProbeStickyCommentStore } from './sandbox-probe-sticky-comment.s
 import { ReviewFailureCommentStore } from './review-failure-comment.store';
 import { AlertThrottleStore } from './alert-throttle.store';
 import { UnreviewedFilesStore } from './unreviewed-files.store';
+import { ReviewInflightStore } from './review-inflight.store';
+import { ReviewSettingsStore } from './review-settings.store';
+import { LastReviewedShaStore } from './last-reviewed-sha.store';
 import { ReviewCommandCooldownStore } from './review-command-cooldown.store';
 import { REDIS_CLIENT } from './redis.constants';
 
@@ -43,6 +46,9 @@ import { REDIS_CLIENT } from './redis.constants';
     ReviewCommandCooldownStore,
     AlertThrottleStore,
     UnreviewedFilesStore,
+    ReviewInflightStore,
+    ReviewSettingsStore,
+    LastReviewedShaStore,
   ],
   exports: [
     REDIS_CLIENT,
@@ -58,6 +64,9 @@ import { REDIS_CLIENT } from './redis.constants';
     ReviewCommandCooldownStore,
     AlertThrottleStore,
     UnreviewedFilesStore,
+    ReviewInflightStore,
+    ReviewSettingsStore,
+    LastReviewedShaStore,
   ],
 })
 export class RedisModule {}

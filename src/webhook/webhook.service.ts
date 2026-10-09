@@ -105,6 +105,7 @@ export class WebhookService {
       payload.pull_request!.number,
     );
 
+    const collectStartedAt = Date.now();
     this.prDataCollectorService
       .collect({
         installationId: payload.installation!.id,
@@ -129,6 +130,7 @@ export class WebhookService {
           repo,
           prNumber: payload.pull_request!.number,
           installationId: payload.installation!.id,
+          collectStartedAt,
         });
       })
       .catch((err: unknown) => {
@@ -174,6 +176,7 @@ export class WebhookService {
   ): void {
     const comment = payload.comment!;
     const pr = payload.pull_request!;
+    const collectStartedAt = Date.now();
 
     if (comment.in_reply_to_id) {
       this.handleThreadReplyMention(payload, owner, repo, comment, pr);
@@ -229,6 +232,7 @@ export class WebhookService {
             repo,
             prNumber: pr.number,
             installationId: payload.installation!.id,
+            collectStartedAt,
           },
         );
       })
@@ -371,6 +375,7 @@ export class WebhookService {
     const prNumber = payload.issue!.number;
     const installationId = payload.installation!.id;
     const commentId = payload.comment!.id;
+    const collectStartedAt = Date.now();
 
     this.reviewReactionService.notifyIssueCommentInProgress(
       installationId,
@@ -398,7 +403,7 @@ export class WebhookService {
         // commentId를 섞어 별도 job으로 만든다 (idempotency 우회).
         return this.reviewDispatcherService.dispatch(
           { ...result, reviewJobId: `${result.reviewJobId}_c${commentId}` },
-          { owner, repo, prNumber, installationId },
+          { owner, repo, prNumber, installationId, collectStartedAt },
         );
       })
       .catch((err: unknown) => {

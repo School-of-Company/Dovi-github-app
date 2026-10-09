@@ -14,6 +14,8 @@ export type FormattedReviewComment = {
   findingIndex: number;
   // 재리뷰 때 이미 게시한 지적을 알아보는 지문. body 끝에 같은 값이 마커로 들어 있다.
   fingerprint: string;
+  // 레포 설정(minSeverity, maxInlineComments)을 적용할 때 쓴다.
+  severity: Finding['severity'];
 };
 
 // ai-server가 생성한 summary는 헤딩/볼드 없는 평문일 수 있어, gemini-code-assist류
@@ -58,6 +60,25 @@ function describeLocation(
   return `[${text}](${url})`;
 }
 
+interface FindingsSection {
+  heading: string;
+  intro: string;
+}
+
+const UNANCHORED_SECTION: FindingsSection = {
+  heading: '위치를 특정할 수 없는 지적사항',
+  intro:
+    'diff에서 정확한 줄을 찾지 못해 인라인으로 달지 못했습니다. 줄 번호가 다를 수 있습니다.',
+};
+
+// 레포 설정 maxInlineComments로 인라인에 달지 못하고 본문에 모은 지적의 섹션.
+export function inlineLimitSection(limit: number): FindingsSection {
+  return {
+    heading: '인라인 코멘트 상한을 넘은 지적사항',
+    intro: `이 레포의 설정(maxInlineComments: ${limit})에 따라 인라인 코멘트는 ${limit}개까지만 달고, 나머지는 심각도가 낮은 순으로 여기에 모았습니다.`,
+  };
+}
+
 // AI가 diff 범위 밖의 줄을 가리켜 인라인 코멘트로 달 수 없었던 finding(GitHub 422)을
 // 리뷰 본문 끝에 모아 붙인다. finding 하나가 거부당해도 리뷰 전체를 잃지 않고
 // 지적 내용이 사용자에게 전달되도록 하기 위함이다.
@@ -65,6 +86,7 @@ export function appendUnanchoredFindings(
   body: string,
   findings: Pick<FormattedReviewComment, 'path' | 'line' | 'body'>[],
   link?: FileLinkBase,
+  section: FindingsSection = UNANCHORED_SECTION,
 ): string {
   if (findings.length === 0) return body;
 
@@ -88,8 +110,8 @@ export function appendUnanchoredFindings(
     .join('\n\n---\n\n');
   const omittedNote = omitted > 0 ? `\n\n외 ${omitted}건` : '';
   const appended =
-    `${body}\n\n---\n\n### 위치를 특정할 수 없는 지적사항\n\n` +
-    `diff에서 정확한 줄을 찾지 못해 인라인으로 달지 못했습니다. 줄 번호가 다를 수 있습니다.\n\n${items}${omittedNote}`;
+    `${body}\n\n---\n\n### ${section.heading}\n\n` +
+    `${section.intro}\n\n${items}${omittedNote}`;
 
   return appended.length > REVIEW_BODY_MAX_CHARS
     ? `${appended.slice(0, REVIEW_BODY_MAX_CHARS)}\n\n…(길이 제한으로 일부 생략)`
@@ -129,6 +151,20 @@ export function appendUnreviewedFiles(
   );
 }
 
+// 증분 리뷰(#94)는 리뷰 본문(= 요약)이 이번에 본 파일만 다룬다. 사용자가 PR 전체를 본 것으로
+// 오해하지 않게 범위를 밝힌다.
+export function appendIncrementalNotice(
+  body: string,
+  previousHeadSha: string,
+  fileCount: number,
+): string {
+  return (
+    `${body}\n\n---\n\n` +
+    `> 증분 리뷰: 이전 리뷰(\`${previousHeadSha.slice(0, 7)}\`) 이후 바뀐 ${fileCount}개 파일만 검토했습니다. ` +
+    `다른 파일의 이전 코멘트는 그대로 유지됩니다.`
+  );
+}
+
 // findingIndex는 원본 payload.reviews 배열 내 인덱스를 그대로 보존한다 —
 // review-orchestrator가 생성된 GitHub 코멘트 id를 이 인덱스로 역매핑해 저장한다
 // (리뷰 반영 여부 이벤트의 findingIndex로 쓰기 위함). GitHub API로는 전송하지 않는다.
@@ -156,6 +192,7 @@ export function buildReviewComments(
         body: `${formatCommentBody(review)}\n\n${fingerprintMarker(fingerprint)}`,
         findingIndex,
         fingerprint,
+        severity: review.severity,
       };
     });
 }

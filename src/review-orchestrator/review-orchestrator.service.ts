@@ -18,12 +18,21 @@ import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store
 import { PrimaryReviewStore } from '../redis/primary-review.store';
 import { AlertThrottleStore } from '../redis/alert-throttle.store';
 import { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
+import { ReviewInflightStore } from '../redis/review-inflight.store';
+import { ReviewSettingsStore } from '../redis/review-settings.store';
+import { LastReviewedShaStore } from '../redis/last-reviewed-sha.store';
+import { capInlineComments, meetsMinSeverity } from '../common/review-settings';
+import type { PublishSettings } from '../common/review-settings';
+import { formatReviewLatency } from '../common/review-latency';
+import type { ReviewOutcome } from '../common/review-latency';
 import { ReviewFailureNoticeService } from './review-failure-notice.service';
 import { extractFingerprint } from './finding-fingerprint';
 import { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import {
   appendUnanchoredFindings,
+  appendIncrementalNotice,
   appendUnreviewedFiles,
+  inlineLimitSection,
   buildReviewComments,
   formatReviewSummary,
 } from './review-comment.formatter';
@@ -61,10 +70,67 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     private readonly reviewFreshness: ReviewFreshnessService,
     private readonly alertThrottle: AlertThrottleStore,
     private readonly unreviewedFilesStore: UnreviewedFilesStore,
+    private readonly reviewInflightStore: ReviewInflightStore,
+    private readonly reviewSettingsStore: ReviewSettingsStore,
+    private readonly lastReviewedShaStore: LastReviewedShaStore,
   ) {}
 
   async handle(
     payload: ReviewCompletedPayload | ReviewFailedPayload,
+  ): Promise<'stale' | undefined> {
+    const resultReceivedAt = Date.now();
+    let outcome: ReviewOutcome = 'error';
+    let context: ReviewJobContext | null = null;
+    try {
+      const result = await this.process(
+        payload,
+        (loaded) => {
+          context = loaded;
+        },
+        (value) => {
+          outcome = value;
+        },
+      );
+      return result;
+    } finally {
+      // 성공·실패·stale·예외 어느 경로로 끝나든 단계별 지연을 한 줄 남긴다(#93).
+      await this.logLatency(payload, context, outcome, resultReceivedAt);
+    }
+  }
+
+  // 지연 측정은 보조 기능이다. 컨텍스트가 없거나(예전 형식 포함) Redis가 실패해도 리뷰 처리에는
+  // 영향이 없어야 하므로 예외를 던지지 않는다.
+  private async logLatency(
+    payload: ReviewCompletedPayload | ReviewFailedPayload,
+    context: ReviewJobContext | null,
+    outcome: ReviewOutcome,
+    resultReceivedAt: number,
+  ): Promise<void> {
+    if (context === null) return;
+    try {
+      // 재시도될 오류(재전달됨)는 아직 진행 중이므로 진행 중 목록에서 빼지 않는다.
+      const inflight =
+        outcome === 'error'
+          ? undefined
+          : await this.reviewInflightStore.leave(payload.reviewJobId);
+      const line = formatReviewLatency({
+        reviewJobId: payload.reviewJobId,
+        outcome,
+        context,
+        resultReceivedAt,
+        finishedAt: Date.now(),
+        inflight,
+      });
+      if (line !== null) this.logger.log(line);
+    } catch (err) {
+      this.logger.warn(`지연 측정 기록 실패: ${payload.reviewJobId}`, err);
+    }
+  }
+
+  private async process(
+    payload: ReviewCompletedPayload | ReviewFailedPayload,
+    onContext: (context: ReviewJobContext) => void,
+    onOutcome: (outcome: ReviewOutcome) => void,
   ): Promise<'stale' | undefined> {
     const context = await this.reviewJobContextStore.get(payload.reviewJobId);
     if (!context) {
@@ -73,6 +139,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       );
       return;
     }
+    onContext(context);
 
     if ('reason' in payload) {
       // 둘 다 예외를 던지지 않고 서로 독립적이라 함께 보낸다.
@@ -80,6 +147,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         this.notifyFailure(payload, context),
         this.reviewFailureNotice.notify(context, payload),
       ]);
+      onOutcome('failed');
       return;
     }
 
@@ -92,6 +160,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       this.logger.log(
         `stale review result skipped (${staleReason}): ${context.owner}/${context.repo}#${context.prNumber} reviewJobId=${payload.reviewJobId} headSha=${payload.headSha}`,
       );
+      onOutcome('stale');
       return 'stale';
     }
 
@@ -100,7 +169,22 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     );
 
     try {
-      const allComments = buildReviewComments(payload.reviews);
+      const settings = await this.findPublishSettings(payload);
+
+      // 레포 설정 minSeverity 미만의 지적은 게시하지 않는다. 지문 계산(아래 정리·중복 판단)보다
+      // 먼저 걸러서, 최소 심각도를 올렸을 때 이전에 달린 낮은 심각도 코멘트가 정리되게 한다.
+      const builtComments = buildReviewComments(payload.reviews);
+      const allComments =
+        settings.minSeverity === undefined
+          ? builtComments
+          : builtComments.filter((comment) =>
+              meetsMinSeverity(comment.severity, settings.minSeverity!),
+            );
+      if (allComments.length < builtComments.length) {
+        this.logger.log(
+          `최소 심각도(${settings.minSeverity})에 못 미쳐 ${builtComments.length - allComments.length}건 생략: PR #${payload.prNumber} reviewJobId=${payload.reviewJobId}`,
+        );
+      }
 
       // 이전에 게시한 코멘트를 정리하되, 이번에도 다시 나온 지적(같은 지문)은 지우지 않고
       // 그대로 둔다. 지우고 다시 올리면 사용자가 해결(resolve)한 스레드가 되살아나고, 답글이
@@ -110,6 +194,9 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         context,
         payload.prNumber,
         new Set(allComments.map((comment) => comment.fingerprint)),
+        context.incrementalPaths === undefined
+          ? undefined
+          : new Set(context.incrementalPaths),
       );
       const freshComments = allComments.filter(
         (comment) => !alreadyPosted.has(comment.fingerprint),
@@ -122,21 +209,57 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
 
       // 줄이 PR diff에 없는 finding은 GitHub가 리뷰 전체를 422로 거부하게 만들므로,
       // 게시 전에 걸러 내 인라인으로 달 수 있는 것만 남기고 나머지는 본문에 싣는다.
-      const { inline: formattedComments, demoted } =
-        await this.partitionByDiffLines(
-          octokit,
-          context,
-          payload,
-          freshComments,
+      const { inline: anchorable, demoted } = await this.partitionByDiffLines(
+        octokit,
+        context,
+        payload,
+        freshComments,
+      );
+
+      // 레포 설정 maxInlineComments: PR 전체의 인라인 상한이므로 이미 게시돼 남아 있는 코멘트를
+      // 뺀 만큼만 새로 단다. 넘는 지적은 버리지 않고 본문에 모은다(심각도가 높은 것을 인라인에 우선).
+      const remainingSlots =
+        settings.maxInlineComments === undefined
+          ? undefined
+          : Math.max(0, settings.maxInlineComments - alreadyPosted.size);
+      const { inline: formattedComments, overflow } = capInlineComments(
+        anchorable,
+        remainingSlots,
+      );
+      if (overflow.length > 0) {
+        this.logger.log(
+          `인라인 상한(${settings.maxInlineComments})을 넘어 ${overflow.length}건을 본문으로 이동: PR #${payload.prNumber} reviewJobId=${payload.reviewJobId}`,
         );
-      const reviewBody = appendUnreviewedFiles(
+      }
+
+      const link = {
+        owner: context.owner,
+        repo: context.repo,
+        sha: payload.headSha,
+      };
+      const summaryBody = appendUnreviewedFiles(
         appendUnanchoredFindings(
-          formatReviewSummary(payload.summary),
-          demoted,
-          { owner: context.owner, repo: context.repo, sha: payload.headSha },
+          appendUnanchoredFindings(
+            formatReviewSummary(payload.summary),
+            demoted,
+            link,
+          ),
+          overflow,
+          link,
+          settings.maxInlineComments === undefined
+            ? undefined
+            : inlineLimitSection(settings.maxInlineComments),
         ),
         await this.findUnreviewedFiles(payload),
       );
+      const reviewBody =
+        context.incrementalBase === undefined
+          ? summaryBody
+          : appendIncrementalNotice(
+              summaryBody,
+              context.incrementalBase,
+              context.incrementalPaths?.length ?? 0,
+            );
       const existingReviewId = await this.primaryReviewStore.get(
         payload.repositoryId,
         payload.prNumber,
@@ -163,6 +286,8 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
 
       // 이전 push에서 실패해 남긴 안내 코멘트는 리뷰가 성공했으니 더 이상 맞지 않는다.
       await this.reviewFailureNotice.clear(context);
+      await this.recordLastReviewedSha(payload);
+      onOutcome('published');
     } catch (err) {
       // 4xx는 재시도해도 소용없는 영구 실패라 한 번만 알린다. 그 밖(5xx, 네트워크 오류)은
       // 던진 오류가 Kafka 재전달로 같은 메시지를 계속 다시 처리하게 만드는데, 그때마다
@@ -173,6 +298,8 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
           `영구적으로 실패한 리뷰 등록(status=${err.status}), 재시도하지 않고 종료: ${payload.reviewJobId}`,
           err,
         );
+        // 재시도하지 않고 끝났으므로 처리가 끝난 것으로 본다(진행 중 목록에서도 뺀다).
+        onOutcome('failed');
         return;
       }
 
@@ -517,6 +644,8 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     context: ReviewJobContext,
     prNumber: number,
     foundAgainFingerprints: Set<string>,
+    // 증분 리뷰면 이번에 다시 본 파일 경로. 그 밖의 파일 코멘트는 이번 결과에 없어도 유효하므로 지우지 않는다.
+    reviewedPaths?: Set<string>,
   ): Promise<Set<string>> {
     const remaining = new Set<string>();
     const botLogin = process.env.GITHUB_BOT_LOGIN;
@@ -550,7 +679,10 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         const foundAgain =
           fingerprint !== null && foundAgainFingerprints.has(fingerprint);
 
-        if (hasReplies || foundAgain) {
+        const outOfScope =
+          reviewedPaths !== undefined && !reviewedPaths.has(comment.path);
+
+        if (hasReplies || foundAgain || outOfScope) {
           // 답글이 달린 스레드는 항상 보존하고, 다시 나온 지적도 그대로 둔다.
           if (fingerprint !== null) remaining.add(fingerprint);
         } else {
@@ -580,6 +712,25 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     return remaining;
   }
 
+  // 증분 리뷰의 기준점. 게시에 성공한 뒤에만 남기고, 기록 실패는 리뷰 결과에 영향이 없다
+  // (다음 리뷰가 기준점 없이 전체 리뷰로 진행할 뿐이다).
+  private async recordLastReviewedSha(
+    payload: ReviewCompletedPayload,
+  ): Promise<void> {
+    try {
+      await this.lastReviewedShaStore.set(
+        payload.repositoryId,
+        payload.prNumber,
+        payload.headSha,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `마지막 리뷰 커밋 기록 실패: PR #${payload.prNumber}`,
+        err,
+      );
+    }
+  }
+
   private async notifyFailure(
     payload: ReviewFailedPayload,
     context: ReviewJobContext,
@@ -592,6 +743,26 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         `(${REASON_DESCRIPTIONS[payload.reason] ?? '알 수 없는 사유'})`,
       color: 'danger',
     });
+  }
+
+  // 레포 설정은 보조 정보라 조회가 실패해도 리뷰는 설정 없이(필터 없이) 게시한다. 설정을 못 읽어
+  // 리뷰 전체를 막는 것보다 필터가 한 번 빠지는 편이 낫다.
+  private async findPublishSettings(
+    payload: ReviewCompletedPayload,
+  ): Promise<PublishSettings> {
+    try {
+      return await this.reviewSettingsStore.get(
+        payload.repositoryId,
+        payload.prNumber,
+        payload.headSha,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `레포 설정 조회 실패, 필터 없이 게시: PR #${payload.prNumber}`,
+        err,
+      );
+      return {};
+    }
   }
 
   // 미검토 파일 안내는 보조 정보라 조회가 실패해도 리뷰 게시는 막지 않는다(안내만 빠진다).

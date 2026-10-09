@@ -42,17 +42,19 @@ Kafka 메시지 key는 `reviewJobId`(문자열)를 그대로 사용한다.
 
 ### `pr.review.requested`
 
-| 필드           | 타입   | 비고                                                                                                                                                                                                                                          |
-| -------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reviewJobId`  | string | 메시지 key와 동일                                                                                                                                                                                                                             |
-| `repositoryId` | number | GitHub repository id (숫자)                                                                                                                                                                                                                   |
-| `prNumber`     | number |                                                                                                                                                                                                                                               |
-| `prTitle`      | string | PR 제목                                                                                                                                                                                                                                       |
-| `prBody`       | string | PR 본문. GitHub API 사양상 본문 없는 PR은 `null`일 수 있어 github-app이 빈 문자열로 대체해 전송한다. ai-server가 2000자로 자르고 `<pr_description>` 태그로 감싸 처리하므로 github-app 쪽은 별도 길이 제한/이스케이프 없이 원문 그대로 보낸다. |
-| `headSha`      | string |                                                                                                                                                                                                                                               |
-| `baseSha`      | string |                                                                                                                                                                                                                                               |
-| `contextFiles` | array  | 아래 `ContextFile` 참고                                                                                                                                                                                                                       |
-| `changedFiles` | array  | 아래 `ChangedFile` 참고                                                                                                                                                                                                                       |
+| 필드              | 타입    | 비고                                                                                                                                                                                                                                          |
+| ----------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reviewJobId`     | string  | 메시지 key와 동일                                                                                                                                                                                                                             |
+| `repositoryId`    | number  | GitHub repository id (숫자)                                                                                                                                                                                                                   |
+| `prNumber`        | number  |                                                                                                                                                                                                                                               |
+| `prTitle`         | string  | PR 제목                                                                                                                                                                                                                                       |
+| `prBody`          | string  | PR 본문. GitHub API 사양상 본문 없는 PR은 `null`일 수 있어 github-app이 빈 문자열로 대체해 전송한다. ai-server가 2000자로 자르고 `<pr_description>` 태그로 감싸 처리하므로 github-app 쪽은 별도 길이 제한/이스케이프 없이 원문 그대로 보낸다. |
+| `headSha`         | string  |                                                                                                                                                                                                                                               |
+| `baseSha`         | string  |                                                                                                                                                                                                                                               |
+| `contextFiles`    | array   | 아래 `ContextFile` 참고                                                                                                                                                                                                                       |
+| `changedFiles`    | array   | 아래 `ChangedFile` 참고                                                                                                                                                                                                                       |
+| `incremental`     | boolean | 선택. 증분 리뷰(`incrementalReview` 설정)일 때만 `true` — `changedFiles`가 `previousHeadSha` 이후 바뀐 파일만이다. ai-server는 아직 읽지 않는다 ([review-settings.md](./review-settings.md))                                                  |
+| `previousHeadSha` | string  | 선택. 증분 리뷰의 기준(이전에 게시된 리뷰의 커밋)                                                                                                                                                                                             |
 
 `ChangedFile`:
 
@@ -76,6 +78,7 @@ Kafka 메시지 key는 `reviewJobId`(문자열)를 그대로 사용한다.
 | `content` | string | 파일 원문 (UTF-8)                                              |
 | `source`  | string | 항상 `"github"` (ai-server `ContextFile.source` 기본값과 일치) |
 
+- (참고) `DOVI.md`의 `## Review Settings`(파일 include/exclude, 최소 심각도, 인라인 상한)는 이벤트에 실리지 않고 github-app 안에서만 쓰인다 — [review-settings.md](./review-settings.md).
 - 후보 파일: 루트의 `DOVI.md`(최우선), `README.md`, `openapi.yaml`/`openapi.yml`/`swagger.json`, `docs/**` 하위 전체 — 모두 "있으면" 포함하는 방식이며, 우선순위 정렬은 ai-server의 `app/review/context.py::_priority`가 담당한다.
 - **규칙 문서**: `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.github/copilot-instructions.md`도 있으면 포함한다("이 프로젝트 규칙을 따른 코드"를 지적하는 오탐을 줄이기 위함). 위 후보와 달리 **PR head가 아니라 base 커밋 기준**으로 읽는다 — 문서 내용이 모델에게 지시로 읽히므로, head에서 읽으면 PR 작성자가 같은 PR에서 규칙 문서를 고쳐 리뷰 지시를 조작할 수 있다(프롬프트 주입 경로). 파일당 50KB, 총합 64KB 상한이며 총량을 넘으면 뒤쪽 파일부터 뺀다. 우선순위·길이 상한은 ai-server의 `app/review/context.py`가 다시 적용한다.
 - secret 경로(`secrets/` 디렉터리, `.env*`, `.pem`/`.p8`/`.key` 확장자, 파일명에 `private-key`/`private_key` 포함)는 `PrDataCollectorService`의 `isSecretPath()`가 1차로 제외한다. ai-server의 `_is_secret()`이 동일 규칙으로 한 번 더 필터링한다.
@@ -210,6 +213,30 @@ ai-server → github-app. `SandboxProbeResultConsumerService`(독립 컨슈머 �
 | `evidence` | string                                   | 최대 4KB                                                                                                    |
 
 github-app은 이 이벤트를 받으면 **메인 리뷰 코멘트(`pulls.createReview`)는 건드리지 않고**, PR 대화창에 마커 주석(`<!-- dovi:sandbox-probe -->`) 기반 sticky 코멘트를 upsert한다(`issues.createComment`/`issues.updateComment`) — 재푸시마다 코멘트가 쌓이지 않도록 항상 같은 코멘트를 갱신하며, 상태별 이모지(✅/🐛/⚠️)를 붙인다. 게시 전 evidence는 본문에 등장하는 최장 백틱 런보다 긴 코드펜스로 감싸고 `@` 멘션을 무력화(zero-width space 삽입)한다. LLM은 개입하지 않는다 — 요약 문구는 프로브 스크립트의 고정 템플릿이다. 결과의 `headSha`가 PR의 현재 head와 다르거나(워커가 도는 동안 새 커밋이 푸시됨) PR이 닫혔으면 오래된 결과이므로 게시하지 않는다 — 새 커밋의 결과가 먼저 도착해 코멘트를 갱신했을 수도 있어 덮어쓰지 않기 위함.
+
+## 리뷰 지연 로그
+
+리뷰 한 건이 1.5~8분 걸리는데 어느 단계가 얼마를 차지하는지 알아야 최적화 대상을 정할 수 있다. 서버 로그에 아래 두 줄이 남는다(`grep "review dispatched\|review latency"`).
+
+```
+review dispatched reviewJobId=… collect=2310ms files=12 patchBytes=34567 inflight=2
+review latency  reviewJobId=… outcome=published collect=2310ms awaitAi=184000ms publish=1200ms total=187510ms files=12 patchBytes=34567 inflight=1
+```
+
+| 필드                  | 의미                                                                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `collect`             | 수집 시작 → `pr.review.requested` 발행 직전. GitHub에서 데이터를 모으는 시간                                                                                 |
+| `awaitAi`             | 발행 → 결과 수신. **큐 대기 + AI 추론**(내부 분해는 ai-server가 측정)                                                                                        |
+| `publish`             | 결과 수신 → GitHub 리뷰 게시 완료                                                                                                                            |
+| `total`               | 수집 시작 → 게시 완료                                                                                                                                        |
+| `files`, `patchBytes` | 요청에 실린 변경 파일 수, patch 총 바이트 — 큰 PR이 오래 걸리는지 상관을 본다                                                                                |
+| `inflight`            | 발행 시점(`dispatched` 줄)에는 자신을 포함해 진행 중이던 job 수, 결과 처리 후(`latency` 줄)에는 남은 진행 중 job 수. AI 서버가 직렬이라 대기 시간을 설명한다 |
+| `outcome`             | `published`(게시), `failed`(AI 실패 이벤트 또는 4xx 영구 실패), `stale`(오래된 결과라 건너뜀), `error`(재시도될 오류)                                        |
+
+- `collect`는 수집을 **시작한 시점**부터라서, `/dovi review`·멘션은 권한·쿨다운 확인 시간이 빠진다.
+- `outcome=error`는 Kafka 재전달로 같은 job이 다시 처리될 때마다 한 줄씩 남는다.
+- 진행 중 job 목록은 Redis(`review:inflight`)에 시각을 점수로 둔 정렬 집합으로 두고, 1시간 지난 항목은 집계에서 제외한다(결과를 못 받은 채 남은 항목이 쌓이지 않게).
+- 이 기능 이전에 저장된 컨텍스트(단계 시각 없음)는 `latency` 줄만 건너뛴다.
 
 ## 요약 원칙
 

@@ -15,6 +15,9 @@ import type { GithubWebhookPayload } from './dto/github-webhook-payload';
 import type { ReviewRequestPayload } from '../pr-data-collector/dto/review-request.payload';
 import type { ThreadComment } from '../comment-answer/dto/comment-answer-request.payload';
 
+// expect.any()는 any를 돌려줘서 객체 리터럴 안에서 쓰면 lint(no-unsafe-assignment)에 걸린다.
+const anyNumber = expect.any(Number) as number;
+
 describe('WebhookService', () => {
   const collected: ReviewRequestPayload = {
     reviewJobId: '1_1_sha',
@@ -213,6 +216,7 @@ describe('WebhookService', () => {
         repo: 'repo',
         prNumber: 1,
         installationId: 10,
+        collectStartedAt: anyNumber,
       },
     );
     expect(commentAnswerCollector.collectThread).not.toHaveBeenCalled();
@@ -517,7 +521,13 @@ describe('WebhookService', () => {
     );
     expect(dispatcher.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ reviewJobId: '1_1_sha_c999' }),
-      { owner: 'owner', repo: 'repo', prNumber: 1, installationId: 10 },
+      {
+        owner: 'owner',
+        repo: 'repo',
+        prNumber: 1,
+        installationId: 10,
+        collectStartedAt: anyNumber,
+      },
     );
     expect(
       reviewReactionService.notifyIssueCommentInProgress,
@@ -548,7 +558,13 @@ describe('WebhookService', () => {
     );
     expect(dispatcher.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ reviewJobId: '1_1_sha_c999' }),
-      { owner: 'owner', repo: 'repo', prNumber: 1, installationId: 10 },
+      {
+        owner: 'owner',
+        repo: 'repo',
+        prNumber: 1,
+        installationId: 10,
+        collectStartedAt: anyNumber,
+      },
     );
   });
 
