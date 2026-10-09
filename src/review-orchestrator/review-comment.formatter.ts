@@ -2,6 +2,7 @@ import {
   computeFindingFingerprint,
   fingerprintMarker,
 } from './finding-fingerprint';
+import type { UnreviewedFile } from '../pr-data-collector/dto/unreviewed-file';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 
 type Finding = ReviewCompletedPayload['reviews'][number];
@@ -93,6 +94,39 @@ export function appendUnanchoredFindings(
   return appended.length > REVIEW_BODY_MAX_CHARS
     ? `${appended.slice(0, REVIEW_BODY_MAX_CHARS)}\n\n…(길이 제한으로 일부 생략)`
     : appended;
+}
+
+const MAX_UNREVIEWED_FILES = 10;
+const UNREVIEWED_REASON_LABEL: Record<UnreviewedFile['reason'], string> = {
+  'patch-budget': '변경 내용이 너무 많아 전송 크기 상한을 넘음',
+  'no-patch': 'GitHub가 변경 내용(diff)을 제공하지 않음(매우 큰 파일)',
+};
+
+// 도비가 AI 서버로 보내지 못한 파일을 리뷰 본문 끝에 알린다. 안내가 없으면 큰 PR에서 일부
+// 파일이 빠져도 "리뷰를 통과했다"고 오해하기 쉽다. 제외가 없으면 본문을 그대로 돌려준다.
+//
+// 이 목록은 도비가 아는 범위(전송 크기 상한, diff 없음)만이다. AI 서버가 프롬프트 크기 때문에
+// 자체적으로 생략하는 파일은 AI 서버만 알아서 여기에 없다.
+export function appendUnreviewedFiles(
+  body: string,
+  files: UnreviewedFile[],
+): string {
+  if (files.length === 0) return body;
+
+  const shown = files.slice(0, MAX_UNREVIEWED_FILES);
+  const omitted = files.length - shown.length;
+  const items = shown
+    .map(
+      ({ filePath, reason }) =>
+        `- \`${filePath}\` — ${UNREVIEWED_REASON_LABEL[reason] ?? '알 수 없는 사유'}`,
+    )
+    .join('\n');
+  const omittedNote = omitted > 0 ? `\n- 외 ${omitted}건` : '';
+
+  return (
+    `${body}\n\n---\n\n### 리뷰하지 못한 파일\n\n` +
+    `아래 파일은 크기 제한 때문에 리뷰 대상에서 빠졌습니다. 이 파일들의 변경은 검토되지 않았으니 직접 확인해 주세요.\n\n${items}${omittedNote}`
+  );
 }
 
 // findingIndex는 원본 payload.reviews 배열 내 인덱스를 그대로 보존한다 —

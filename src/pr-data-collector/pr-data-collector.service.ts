@@ -5,11 +5,13 @@ import { describeSkipReason, fetchFileContent } from '../common/github-content';
 import { withRetry } from '../common/retry';
 import { maskChangedFiles, maskSecrets } from '../common/secret-mask';
 import { isSecretPath } from '../common/secret-path';
+import { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
 import { sortByReviewPriority } from './changed-file-priority';
 import { shouldSendContent } from './content-eligibility';
 import type { CollectPrDataCommand } from './dto/collect-pr-data.command';
+import type { UnreviewedFile } from './dto/unreviewed-file';
 import type {
   ChangedFile,
   ChangedFileStatus,
@@ -65,6 +67,7 @@ export class PrDataCollectorService {
   constructor(
     @Inject(INSTALLATION_TOKEN_MANAGER)
     private readonly installationTokenManager: InstallationTokenManager,
+    private readonly unreviewedFilesStore: UnreviewedFilesStore,
   ) {}
 
   async collect(
@@ -102,7 +105,12 @@ export class PrDataCollectorService {
     const diff = diffResult.value;
     if (diff === null) return null;
 
-    const changedFiles = changedFilesResult.value;
+    const { changedFiles, unreviewed } = changedFilesResult.value;
+
+    // 리뷰하지 못한 파일은 게시 단계가 리뷰 본문에 안내할 수 있게 넘겨 둔다. 안내는 보조
+    // 기능이라 저장에 실패해도 리뷰를 막지 않는다.
+    await this.saveUnreviewed(repositoryId, prNumber, headSha, unreviewed);
+
     // 규칙 문서는 보조 정보라 읽기에 실패해도(fetchRuleDocs는 던지지 않지만) 리뷰를 막지 않는다.
     const contextFiles = [
       ...contextFilesResult.value,
@@ -188,7 +196,7 @@ export class PrDataCollectorService {
     repo: string,
     prNumber: number,
     headSha: string,
-  ): Promise<ChangedFile[]> {
+  ): Promise<{ changedFiles: ChangedFile[]; unreviewed: UnreviewedFile[] }> {
     const files = await withRetry(() =>
       octokit.paginate(octokit.rest.pulls.listFiles, {
         owner,
@@ -197,6 +205,21 @@ export class PrDataCollectorService {
         per_page: 100,
       }),
     );
+
+    // GitHub는 너무 큰 파일에는 patch를 주지 않는다. 바이너리·순수 이름 변경도 patch가 없지만
+    // 그때는 변경 줄 수(changes)가 0이라 "리뷰할 내용이 없는 것"이므로 미검토로 보지 않는다.
+    const unreviewed: UnreviewedFile[] = files
+      .filter(
+        (file) =>
+          SUPPORTED_FILE_STATUSES.has(file.status as ChangedFileStatus) &&
+          file.status !== 'removed' &&
+          file.patch === undefined &&
+          file.changes > 0,
+      )
+      .map((file) => ({
+        filePath: file.filename,
+        reason: 'no-patch' as const,
+      }));
 
     const changedFiles = files
       .filter((file): file is typeof file & { status: ChangedFileStatus } =>
@@ -287,7 +310,35 @@ export class PrDataCollectorService {
       );
     }
 
-    return sortByReviewPriority(changedFiles);
+    unreviewed.push(
+      ...droppedPatch.map((filePath) => ({
+        filePath,
+        reason: 'patch-budget' as const,
+      })),
+    );
+
+    return { changedFiles: sortByReviewPriority(changedFiles), unreviewed };
+  }
+
+  private async saveUnreviewed(
+    repositoryId: number,
+    prNumber: number,
+    headSha: string,
+    unreviewed: UnreviewedFile[],
+  ): Promise<void> {
+    try {
+      await this.unreviewedFilesStore.set(
+        repositoryId,
+        prNumber,
+        headSha,
+        unreviewed,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `미검토 파일 목록 저장 실패, 리뷰 본문 안내 없이 진행: PR #${prNumber}`,
+        err,
+      );
+    }
   }
 
   // 규칙 문서는 **PR의 base 커밋** 기준으로 읽는다. 문서 내용은 모델에게 지시로 읽히는데, PR

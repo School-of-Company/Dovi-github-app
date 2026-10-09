@@ -1,5 +1,6 @@
 import {
   appendUnanchoredFindings,
+  appendUnreviewedFiles,
   buildReviewComments,
   formatReviewSummary,
 } from './review-comment.formatter';
@@ -9,6 +10,31 @@ import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 describe('formatReviewSummary', () => {
   it('summary 앞에 고정 헤더를 붙인다', () => {
     expect(formatReviewSummary('요약 내용')).toBe('# Code Review\n\n요약 내용');
+  });
+});
+
+describe('appendUnreviewedFiles', () => {
+  it('목록이 비어 있으면 본문을 그대로 돌려준다', () => {
+    expect(appendUnreviewedFiles('본문', [])).toBe('본문');
+  });
+
+  it('파일과 사유를 본문 끝에 덧붙이고 직접 확인하라고 안내한다', () => {
+    const body = appendUnreviewedFiles('본문', [
+      { filePath: 'src/a.ts', reason: 'patch-budget' },
+    ]);
+
+    expect(body.startsWith('본문')).toBe(true);
+    expect(body).toContain('### 리뷰하지 못한 파일');
+    expect(body).toContain('직접 확인해 주세요');
+    expect(body).toContain('- `src/a.ts` — 변경 내용이 너무 많아');
+  });
+
+  it('알 수 없는 사유(예: 나중에 추가된 값)도 깨지지 않고 표시한다', () => {
+    const body = appendUnreviewedFiles('본문', [
+      { filePath: 'src/a.ts', reason: 'future-reason' as 'no-patch' },
+    ]);
+
+    expect(body).toContain('`src/a.ts` — 알 수 없는 사유');
   });
 });
 

@@ -9,6 +9,7 @@ import type { ReviewFailureNoticeService } from './review-failure-notice.service
 import { fingerprintMarker } from './finding-fingerprint';
 import { buildReviewComments } from './review-comment.formatter';
 import type { AlertThrottleStore } from '../redis/alert-throttle.store';
+import type { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
 import type { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
@@ -36,6 +37,7 @@ describe('ReviewOrchestratorService', () => {
   let reviewFailureNotice: { notify: jest.Mock; clear: jest.Mock };
   let reviewFreshness: { findStaleReason: jest.Mock };
   let alertThrottle: { acquire: jest.Mock };
+  let unreviewedFilesStore: { get: jest.Mock };
   let service: ReviewOrchestratorService;
 
   const context: ReviewJobContext = {
@@ -101,6 +103,7 @@ describe('ReviewOrchestratorService', () => {
     dicoshot = { sendCustom: jest.fn() };
     reviewFreshness = { findStaleReason: jest.fn().mockResolvedValue(null) };
     alertThrottle = { acquire: jest.fn().mockResolvedValue(true) };
+    unreviewedFilesStore = { get: jest.fn().mockResolvedValue([]) };
     reviewFailureNotice = {
       notify: jest.fn().mockResolvedValue(undefined),
       clear: jest.fn().mockResolvedValue(undefined),
@@ -115,6 +118,7 @@ describe('ReviewOrchestratorService', () => {
       reviewFailureNotice as unknown as ReviewFailureNoticeService,
       reviewFreshness as unknown as ReviewFreshnessService,
       alertThrottle as unknown as AlertThrottleStore,
+      unreviewedFilesStore as unknown as UnreviewedFilesStore,
     );
   });
 
@@ -327,6 +331,73 @@ describe('ReviewOrchestratorService', () => {
     expect(dicoshot.sendCustom).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'GitHub 리뷰 등록 실패' }),
     );
+  });
+
+  describe('리뷰하지 못한 파일 안내 (#86)', () => {
+    const reviewBodyOf = (): string =>
+      (createReview.mock.calls[0] as [{ body: string }])[0].body;
+
+    it('제외된 파일이 없으면 안내 섹션을 넣지 않는다', async () => {
+      await service.handle(completedPayload);
+
+      expect(reviewBodyOf()).not.toContain('리뷰하지 못한 파일');
+    });
+
+    it('사유와 함께 리뷰 본문 끝에 미검토 파일을 알린다', async () => {
+      unreviewedFilesStore.get.mockResolvedValue([
+        { filePath: 'src/huge.ts', reason: 'no-patch' },
+        { filePath: 'docs/big.md', reason: 'patch-budget' },
+      ]);
+
+      await service.handle(completedPayload);
+
+      const body = reviewBodyOf();
+      expect(body).toContain('### 리뷰하지 못한 파일');
+      expect(body).toContain(
+        '`src/huge.ts` — GitHub가 변경 내용(diff)을 제공하지 않음',
+      );
+      expect(body).toContain(
+        '`docs/big.md` — 변경 내용이 너무 많아 전송 크기 상한을 넘음',
+      );
+      expect(body.indexOf('# Code Review')).toBeLessThan(
+        body.indexOf('리뷰하지 못한 파일'),
+      );
+    });
+
+    it('결과 이벤트의 (저장소, PR, headSha)로 목록을 조회한다', async () => {
+      await service.handle(completedPayload);
+
+      expect(unreviewedFilesStore.get).toHaveBeenCalledWith(
+        completedPayload.repositoryId,
+        completedPayload.prNumber,
+        completedPayload.headSha,
+      );
+    });
+
+    it('목록이 10개를 넘으면 10개만 보이고 나머지는 "외 N건"으로 줄인다', async () => {
+      unreviewedFilesStore.get.mockResolvedValue(
+        Array.from({ length: 13 }, (_, i) => ({
+          filePath: `src/file${i}.ts`,
+          reason: 'no-patch',
+        })),
+      );
+
+      await service.handle(completedPayload);
+
+      const body = reviewBodyOf();
+      expect(body).toContain('src/file9.ts');
+      expect(body).not.toContain('src/file10.ts');
+      expect(body).toContain('외 3건');
+    });
+
+    it('목록 조회가 실패해도 리뷰는 안내 없이 게시한다', async () => {
+      unreviewedFilesStore.get.mockRejectedValue(new Error('redis down'));
+
+      await service.handle(completedPayload);
+
+      expect(createReview).toHaveBeenCalledTimes(1);
+      expect(reviewBodyOf()).not.toContain('리뷰하지 못한 파일');
+    });
   });
 
   describe('재시도되는 오류의 알림', () => {
