@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DicoshotService } from 'dicoshot-nest';
 import type { CustomMessageOptions } from 'dicoshot-nest';
 import type { Octokit } from '@octokit/rest';
+import { describeError } from '../common/describe-error';
 import { isClientError, isRateLimitError } from '../common/http-error';
 import { withRetry } from '../common/retry';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
@@ -190,7 +191,7 @@ export class SandboxProbeResponderService {
   ): Promise<void> {
     await this.safeNotify({
       title: '샌드박스 프로브 코멘트 게시 실패',
-      description: `${context.owner}/${context.repo}#${context.prNumber} (reviewJobId=${payload.reviewJobId}): ${err instanceof Error ? err.message : String(err)}`,
+      description: `${context.owner}/${context.repo}#${context.prNumber} (reviewJobId=${payload.reviewJobId}): ${describeError(err)}`,
       color: 'danger',
     });
   }
