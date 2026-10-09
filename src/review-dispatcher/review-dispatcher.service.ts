@@ -3,6 +3,7 @@ import { KafkaProducerService } from '../kafka/kafka-producer.service';
 import { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import { IdempotencyStore } from '../redis/idempotency.store';
 import { JobStateStore } from '../redis/job-state.store';
+import { ReviewInflightStore } from '../redis/review-inflight.store';
 import { ReviewJobContextStore } from '../redis/review-job-context.store';
 import type { ReviewJobContext } from '../redis/review-job-context.type';
 import type { ReviewRequestPayload } from '../pr-data-collector/dto/review-request.payload';
@@ -17,6 +18,7 @@ export class ReviewDispatcherService {
     private readonly reviewJobContextStore: ReviewJobContextStore,
     private readonly kafkaProducer: KafkaProducerService,
     private readonly reviewFreshness: ReviewFreshnessService,
+    private readonly reviewInflightStore: ReviewInflightStore,
   ) {}
 
   async dispatch(
@@ -54,9 +56,22 @@ export class ReviewDispatcherService {
       return;
     }
 
+    // 단계별 지연 측정(#93): 결과를 받을 때 계산할 수 있도록 발행 시각과 요청 크기를 컨텍스트에 남긴다.
+    const dispatchedAt = Date.now();
+    const measuredContext: ReviewJobContext = {
+      ...context,
+      dispatchedAt,
+      files: payload.changedFiles.length,
+      patchBytes: payload.changedFiles.reduce(
+        (sum, file) =>
+          sum + (file.patch === undefined ? 0 : Buffer.byteLength(file.patch)),
+        0,
+      ),
+    };
+
     await Promise.all([
       this.jobStateStore.set(reviewJobId, 'requested'),
-      this.reviewJobContextStore.set(reviewJobId, context),
+      this.reviewJobContextStore.set(reviewJobId, measuredContext),
     ]);
 
     try {
@@ -65,9 +80,31 @@ export class ReviewDispatcherService {
         payload,
         reviewJobId,
       );
+      await this.logDispatched(reviewJobId, measuredContext);
     } catch (err) {
       this.logger.error(`Kafka 발행 실패: ${reviewJobId}`, err);
       throw err;
+    }
+  }
+
+  // 발행 시점의 수집 시간과 진행 중 job 수(앞에 몇 건이 있었는지)를 남긴다. 측정은 보조
+  // 기능이라 Redis 오류가 발행 흐름에 영향을 주지 않게 삼킨다.
+  private async logDispatched(
+    reviewJobId: string,
+    context: ReviewJobContext,
+  ): Promise<void> {
+    try {
+      const inflight = await this.reviewInflightStore.enter(reviewJobId);
+      const collect =
+        context.collectStartedAt !== undefined &&
+        context.dispatchedAt !== undefined
+          ? `${Math.max(0, context.dispatchedAt - context.collectStartedAt)}ms`
+          : 'n/a';
+      this.logger.log(
+        `review dispatched reviewJobId=${reviewJobId} collect=${collect} files=${context.files} patchBytes=${context.patchBytes} inflight=${inflight}`,
+      );
+    } catch (err) {
+      this.logger.warn(`발행 측정 기록 실패: ${reviewJobId}`, err);
     }
   }
 }

@@ -18,6 +18,9 @@ import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store
 import { PrimaryReviewStore } from '../redis/primary-review.store';
 import { AlertThrottleStore } from '../redis/alert-throttle.store';
 import { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
+import { ReviewInflightStore } from '../redis/review-inflight.store';
+import { formatReviewLatency } from '../common/review-latency';
+import type { ReviewOutcome } from '../common/review-latency';
 import { ReviewFailureNoticeService } from './review-failure-notice.service';
 import { extractFingerprint } from './finding-fingerprint';
 import { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
@@ -61,10 +64,65 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     private readonly reviewFreshness: ReviewFreshnessService,
     private readonly alertThrottle: AlertThrottleStore,
     private readonly unreviewedFilesStore: UnreviewedFilesStore,
+    private readonly reviewInflightStore: ReviewInflightStore,
   ) {}
 
   async handle(
     payload: ReviewCompletedPayload | ReviewFailedPayload,
+  ): Promise<'stale' | undefined> {
+    const resultReceivedAt = Date.now();
+    let outcome: ReviewOutcome = 'error';
+    let context: ReviewJobContext | null = null;
+    try {
+      const result = await this.process(
+        payload,
+        (loaded) => {
+          context = loaded;
+        },
+        (value) => {
+          outcome = value;
+        },
+      );
+      return result;
+    } finally {
+      // 성공·실패·stale·예외 어느 경로로 끝나든 단계별 지연을 한 줄 남긴다(#93).
+      await this.logLatency(payload, context, outcome, resultReceivedAt);
+    }
+  }
+
+  // 지연 측정은 보조 기능이다. 컨텍스트가 없거나(예전 형식 포함) Redis가 실패해도 리뷰 처리에는
+  // 영향이 없어야 하므로 예외를 던지지 않는다.
+  private async logLatency(
+    payload: ReviewCompletedPayload | ReviewFailedPayload,
+    context: ReviewJobContext | null,
+    outcome: ReviewOutcome,
+    resultReceivedAt: number,
+  ): Promise<void> {
+    if (context === null) return;
+    try {
+      // 재시도될 오류(재전달됨)는 아직 진행 중이므로 진행 중 목록에서 빼지 않는다.
+      const inflight =
+        outcome === 'error'
+          ? undefined
+          : await this.reviewInflightStore.leave(payload.reviewJobId);
+      const line = formatReviewLatency({
+        reviewJobId: payload.reviewJobId,
+        outcome,
+        context,
+        resultReceivedAt,
+        finishedAt: Date.now(),
+        inflight,
+      });
+      if (line !== null) this.logger.log(line);
+    } catch (err) {
+      this.logger.warn(`지연 측정 기록 실패: ${payload.reviewJobId}`, err);
+    }
+  }
+
+  private async process(
+    payload: ReviewCompletedPayload | ReviewFailedPayload,
+    onContext: (context: ReviewJobContext) => void,
+    onOutcome: (outcome: ReviewOutcome) => void,
   ): Promise<'stale' | undefined> {
     const context = await this.reviewJobContextStore.get(payload.reviewJobId);
     if (!context) {
@@ -73,6 +131,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       );
       return;
     }
+    onContext(context);
 
     if ('reason' in payload) {
       // 둘 다 예외를 던지지 않고 서로 독립적이라 함께 보낸다.
@@ -80,6 +139,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         this.notifyFailure(payload, context),
         this.reviewFailureNotice.notify(context, payload),
       ]);
+      onOutcome('failed');
       return;
     }
 
@@ -92,6 +152,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       this.logger.log(
         `stale review result skipped (${staleReason}): ${context.owner}/${context.repo}#${context.prNumber} reviewJobId=${payload.reviewJobId} headSha=${payload.headSha}`,
       );
+      onOutcome('stale');
       return 'stale';
     }
 
@@ -163,6 +224,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
 
       // 이전 push에서 실패해 남긴 안내 코멘트는 리뷰가 성공했으니 더 이상 맞지 않는다.
       await this.reviewFailureNotice.clear(context);
+      onOutcome('published');
     } catch (err) {
       // 4xx는 재시도해도 소용없는 영구 실패라 한 번만 알린다. 그 밖(5xx, 네트워크 오류)은
       // 던진 오류가 Kafka 재전달로 같은 메시지를 계속 다시 처리하게 만드는데, 그때마다
@@ -173,6 +235,8 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
           `영구적으로 실패한 리뷰 등록(status=${err.status}), 재시도하지 않고 종료: ${payload.reviewJobId}`,
           err,
         );
+        // 재시도하지 않고 끝났으므로 처리가 끝난 것으로 본다(진행 중 목록에서도 뺀다).
+        onOutcome('failed');
         return;
       }
 
