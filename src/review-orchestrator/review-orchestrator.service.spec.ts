@@ -8,6 +8,7 @@ import type { PrimaryReviewStore } from '../redis/primary-review.store';
 import type { ReviewFailureNoticeService } from './review-failure-notice.service';
 import { fingerprintMarker } from './finding-fingerprint';
 import { buildReviewComments } from './review-comment.formatter';
+import type { AlertThrottleStore } from '../redis/alert-throttle.store';
 import type { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
@@ -34,6 +35,7 @@ describe('ReviewOrchestratorService', () => {
   let dicoshot: { sendCustom: jest.Mock };
   let reviewFailureNotice: { notify: jest.Mock; clear: jest.Mock };
   let reviewFreshness: { findStaleReason: jest.Mock };
+  let alertThrottle: { acquire: jest.Mock };
   let service: ReviewOrchestratorService;
 
   const context: ReviewJobContext = {
@@ -98,6 +100,7 @@ describe('ReviewOrchestratorService', () => {
     };
     dicoshot = { sendCustom: jest.fn() };
     reviewFreshness = { findStaleReason: jest.fn().mockResolvedValue(null) };
+    alertThrottle = { acquire: jest.fn().mockResolvedValue(true) };
     reviewFailureNotice = {
       notify: jest.fn().mockResolvedValue(undefined),
       clear: jest.fn().mockResolvedValue(undefined),
@@ -111,6 +114,7 @@ describe('ReviewOrchestratorService', () => {
       dicoshot as unknown as DicoshotService,
       reviewFailureNotice as unknown as ReviewFailureNoticeService,
       reviewFreshness as unknown as ReviewFreshnessService,
+      alertThrottle as unknown as AlertThrottleStore,
     );
   });
 
@@ -323,6 +327,78 @@ describe('ReviewOrchestratorService', () => {
     expect(dicoshot.sendCustom).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'GitHub 리뷰 등록 실패' }),
     );
+  });
+
+  describe('재시도되는 오류의 알림', () => {
+    const alertCalls = () =>
+      dicoshot.sendCustom.mock.calls as [{ description: string }][];
+
+    it('네트워크 연결 실패처럼 message가 빈 오류도 알림에 원인(cause 사슬)을 보여준다', async () => {
+      const aggregate = Object.assign(
+        new AggregateError([
+          Object.assign(new Error('connect ETIMEDOUT 140.82.112.5:443'), {
+            code: 'ETIMEDOUT',
+          }),
+        ]),
+        { code: 'ETIMEDOUT' },
+      );
+      const fetchFailed = Object.assign(new TypeError('fetch failed'), {
+        cause: aggregate,
+      });
+      // octokit이 만드는 모양: status 500, message ''
+      const error = Object.assign(new Error(''), {
+        name: 'HttpError',
+        status: 500,
+        cause: fetchFailed,
+      });
+      createReview.mockRejectedValue(error);
+
+      await expect(service.handle(completedPayload)).rejects.toBe(error);
+
+      const [{ description }] = alertCalls()[0];
+      expect(description).toContain('HttpError(status=500)');
+      expect(description).toContain('fetch failed');
+      expect(description).toContain('ETIMEDOUT');
+      expect(description).not.toMatch(/\): *\n/); // "):" 뒤가 비어 있지 않다
+      expect(description).toContain('재시도 중');
+    });
+
+    it('같은 job의 반복 실패는 알림을 한 번만 보내되 오류는 계속 던져 재시도되게 한다', async () => {
+      const error = makeHttpError(500);
+      createReview.mockRejectedValue(error);
+      alertThrottle.acquire
+        .mockResolvedValueOnce(true)
+        .mockResolvedValue(false);
+
+      await expect(service.handle(completedPayload)).rejects.toBe(error);
+      await expect(service.handle(completedPayload)).rejects.toBe(error);
+      await expect(service.handle(completedPayload)).rejects.toBe(error);
+
+      expect(dicoshot.sendCustom).toHaveBeenCalledTimes(1);
+      expect(alertThrottle.acquire).toHaveBeenCalledWith(
+        `orchestrator-error:${completedPayload.reviewJobId}`,
+        600,
+      );
+    });
+
+    it('알림 제한 저장소(Redis)가 실패해도 알림은 보낸다', async () => {
+      createReview.mockRejectedValue(makeHttpError(500));
+      alertThrottle.acquire.mockRejectedValue(new Error('redis down'));
+
+      await expect(service.handle(completedPayload)).rejects.toBeDefined();
+
+      expect(dicoshot.sendCustom).toHaveBeenCalledTimes(1);
+    });
+
+    it('4xx(영구 실패)는 제한 없이 알리고 재시도 안내 문구를 붙이지 않는다', async () => {
+      createReview.mockRejectedValue(makeHttpError(422));
+
+      await service.handle(completedPayload);
+
+      expect(alertThrottle.acquire).not.toHaveBeenCalled();
+      const [{ description }] = alertCalls()[0];
+      expect(description).not.toContain('재시도 중');
+    });
   });
 
   it('finding이 있으면 생성된 리뷰 코멘트 id를 findingIndex와 함께 저장한다', async () => {
