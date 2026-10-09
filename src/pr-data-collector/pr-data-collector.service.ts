@@ -8,6 +8,7 @@ import { isSecretPath } from '../common/secret-path';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
 import { sortByReviewPriority } from './changed-file-priority';
+import { shouldSendContent } from './content-eligibility';
 import type { CollectPrDataCommand } from './dto/collect-pr-data.command';
 import type {
   ChangedFile,
@@ -47,20 +48,7 @@ const RULE_DOC_CANDIDATES = [
 const RULE_DOC_SIZE_LIMIT = 50 * 1024;
 const RULE_DOCS_TOTAL_BUDGET = 64 * 1024;
 
-// ai-server의 app/review/chunking.py::_EXTENSION_LANGUAGE와 동일한 목록.
-// AST 파싱을 지원하지 않는 확장자는 content를 보내봐야 ai-server가 버리므로
-// API 호출/페이로드 크기 절약을 위해 여기서 미리 거른다.
-const AST_SUPPORTED_EXTENSIONS = new Set([
-  '.py',
-  '.js',
-  '.jsx',
-  '.mjs',
-  '.cjs',
-  '.ts',
-  '.tsx',
-  '.java',
-]);
-// ai-server의 AST context 기능(app/review/chunking.py)이 파싱할 원본 파일 크기 상한.
+// ai-server가 함수 경계/줄 윈도우 컨텍스트를 만들 원본 파일 크기 상한.
 const CHANGED_FILE_CONTENT_SIZE_LIMIT = 200 * 1024;
 // Kafka 브로커의 기본 message.max.bytes(~1MB)를 넘기지 않도록, PR 하나에서 보내는
 // changedFiles[].content 총합에 두는 예산. 파일 하나당 최대 200KB라 파일 수가 많은
@@ -69,12 +57,6 @@ const CHANGED_FILE_CONTENT_TOTAL_BUDGET = 512 * 1024;
 // content + patch 총합 상한. patch는 content 예산에 안 잡혀서 파일 수가 많은 PR은
 // patch만으로 메시지 크기를 넘길 수 있다. contextFiles/메타데이터 몫을 남겨 둔다.
 const CHANGED_FILE_TOTAL_BUDGET = 768 * 1024;
-
-function hasAstSupportedExtension(path: string): boolean {
-  const dot = path.lastIndexOf('.');
-  if (dot === -1) return false;
-  return AST_SUPPORTED_EXTENSIONS.has(path.slice(dot).toLowerCase());
-}
 
 @Injectable()
 export class PrDataCollectorService {
@@ -236,8 +218,10 @@ export class PrDataCollectorService {
     await Promise.all(
       changedFiles.map(async (file) => {
         if (file.status === 'removed') return;
-        if (!hasAstSupportedExtension(file.filePath)) {
-          skipped.push(`${file.filePath} (AST 미지원 확장자)`);
+        if (!shouldSendContent(file.filePath)) {
+          skipped.push(
+            `${file.filePath} (텍스트 소스가 아니거나 생성·minified 파일)`,
+          );
           return;
         }
         if (isSecretPath(file.filePath)) {
