@@ -5,10 +5,13 @@ import { describeSkipReason, fetchFileContent } from '../common/github-content';
 import { withRetry } from '../common/retry';
 import { maskChangedFiles, maskSecrets } from '../common/secret-mask';
 import { isSecretPath } from '../common/secret-path';
+import { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
 import { sortByReviewPriority } from './changed-file-priority';
+import { shouldSendContent } from './content-eligibility';
 import type { CollectPrDataCommand } from './dto/collect-pr-data.command';
+import type { UnreviewedFile } from './dto/unreviewed-file';
 import type {
   ChangedFile,
   ChangedFileStatus,
@@ -47,20 +50,7 @@ const RULE_DOC_CANDIDATES = [
 const RULE_DOC_SIZE_LIMIT = 50 * 1024;
 const RULE_DOCS_TOTAL_BUDGET = 64 * 1024;
 
-// ai-server의 app/review/chunking.py::_EXTENSION_LANGUAGE와 동일한 목록.
-// AST 파싱을 지원하지 않는 확장자는 content를 보내봐야 ai-server가 버리므로
-// API 호출/페이로드 크기 절약을 위해 여기서 미리 거른다.
-const AST_SUPPORTED_EXTENSIONS = new Set([
-  '.py',
-  '.js',
-  '.jsx',
-  '.mjs',
-  '.cjs',
-  '.ts',
-  '.tsx',
-  '.java',
-]);
-// ai-server의 AST context 기능(app/review/chunking.py)이 파싱할 원본 파일 크기 상한.
+// ai-server가 함수 경계/줄 윈도우 컨텍스트를 만들 원본 파일 크기 상한.
 const CHANGED_FILE_CONTENT_SIZE_LIMIT = 200 * 1024;
 // Kafka 브로커의 기본 message.max.bytes(~1MB)를 넘기지 않도록, PR 하나에서 보내는
 // changedFiles[].content 총합에 두는 예산. 파일 하나당 최대 200KB라 파일 수가 많은
@@ -70,12 +60,6 @@ const CHANGED_FILE_CONTENT_TOTAL_BUDGET = 512 * 1024;
 // patch만으로 메시지 크기를 넘길 수 있다. contextFiles/메타데이터 몫을 남겨 둔다.
 const CHANGED_FILE_TOTAL_BUDGET = 768 * 1024;
 
-function hasAstSupportedExtension(path: string): boolean {
-  const dot = path.lastIndexOf('.');
-  if (dot === -1) return false;
-  return AST_SUPPORTED_EXTENSIONS.has(path.slice(dot).toLowerCase());
-}
-
 @Injectable()
 export class PrDataCollectorService {
   private readonly logger = new Logger(PrDataCollectorService.name);
@@ -83,6 +67,7 @@ export class PrDataCollectorService {
   constructor(
     @Inject(INSTALLATION_TOKEN_MANAGER)
     private readonly installationTokenManager: InstallationTokenManager,
+    private readonly unreviewedFilesStore: UnreviewedFilesStore,
   ) {}
 
   async collect(
@@ -120,7 +105,12 @@ export class PrDataCollectorService {
     const diff = diffResult.value;
     if (diff === null) return null;
 
-    const changedFiles = changedFilesResult.value;
+    const { changedFiles, unreviewed } = changedFilesResult.value;
+
+    // 리뷰하지 못한 파일은 게시 단계가 리뷰 본문에 안내할 수 있게 넘겨 둔다. 안내는 보조
+    // 기능이라 저장에 실패해도 리뷰를 막지 않는다.
+    await this.saveUnreviewed(repositoryId, prNumber, headSha, unreviewed);
+
     // 규칙 문서는 보조 정보라 읽기에 실패해도(fetchRuleDocs는 던지지 않지만) 리뷰를 막지 않는다.
     const contextFiles = [
       ...contextFilesResult.value,
@@ -206,7 +196,7 @@ export class PrDataCollectorService {
     repo: string,
     prNumber: number,
     headSha: string,
-  ): Promise<ChangedFile[]> {
+  ): Promise<{ changedFiles: ChangedFile[]; unreviewed: UnreviewedFile[] }> {
     const files = await withRetry(() =>
       octokit.paginate(octokit.rest.pulls.listFiles, {
         owner,
@@ -215,6 +205,21 @@ export class PrDataCollectorService {
         per_page: 100,
       }),
     );
+
+    // GitHub는 너무 큰 파일에는 patch를 주지 않는다. 바이너리·순수 이름 변경도 patch가 없지만
+    // 그때는 변경 줄 수(changes)가 0이라 "리뷰할 내용이 없는 것"이므로 미검토로 보지 않는다.
+    const unreviewed: UnreviewedFile[] = files
+      .filter(
+        (file) =>
+          SUPPORTED_FILE_STATUSES.has(file.status as ChangedFileStatus) &&
+          file.status !== 'removed' &&
+          file.patch === undefined &&
+          file.changes > 0,
+      )
+      .map((file) => ({
+        filePath: file.filename,
+        reason: 'no-patch' as const,
+      }));
 
     const changedFiles = files
       .filter((file): file is typeof file & { status: ChangedFileStatus } =>
@@ -236,8 +241,10 @@ export class PrDataCollectorService {
     await Promise.all(
       changedFiles.map(async (file) => {
         if (file.status === 'removed') return;
-        if (!hasAstSupportedExtension(file.filePath)) {
-          skipped.push(`${file.filePath} (AST 미지원 확장자)`);
+        if (!shouldSendContent(file.filePath)) {
+          skipped.push(
+            `${file.filePath} (텍스트 소스가 아니거나 생성·minified 파일)`,
+          );
           return;
         }
         if (isSecretPath(file.filePath)) {
@@ -303,7 +310,35 @@ export class PrDataCollectorService {
       );
     }
 
-    return sortByReviewPriority(changedFiles);
+    unreviewed.push(
+      ...droppedPatch.map((filePath) => ({
+        filePath,
+        reason: 'patch-budget' as const,
+      })),
+    );
+
+    return { changedFiles: sortByReviewPriority(changedFiles), unreviewed };
+  }
+
+  private async saveUnreviewed(
+    repositoryId: number,
+    prNumber: number,
+    headSha: string,
+    unreviewed: UnreviewedFile[],
+  ): Promise<void> {
+    try {
+      await this.unreviewedFilesStore.set(
+        repositoryId,
+        prNumber,
+        headSha,
+        unreviewed,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `미검토 파일 목록 저장 실패, 리뷰 본문 안내 없이 진행: PR #${prNumber}`,
+        err,
+      );
+    }
   }
 
   // 규칙 문서는 **PR의 base 커밋** 기준으로 읽는다. 문서 내용은 모델에게 지시로 읽히는데, PR
