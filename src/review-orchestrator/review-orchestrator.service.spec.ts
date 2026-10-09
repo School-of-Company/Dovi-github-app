@@ -12,6 +12,7 @@ import type { AlertThrottleStore } from '../redis/alert-throttle.store';
 import type { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
 import type { ReviewInflightStore } from '../redis/review-inflight.store';
 import type { ReviewSettingsStore } from '../redis/review-settings.store';
+import type { LastReviewedShaStore } from '../redis/last-reviewed-sha.store';
 import type { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
@@ -42,6 +43,7 @@ describe('ReviewOrchestratorService', () => {
   let unreviewedFilesStore: { get: jest.Mock };
   let reviewInflightStore: { leave: jest.Mock };
   let reviewSettingsStore: { get: jest.Mock };
+  let lastReviewedShaStore: { set: jest.Mock };
   let service: ReviewOrchestratorService;
 
   const context: ReviewJobContext = {
@@ -110,6 +112,7 @@ describe('ReviewOrchestratorService', () => {
     unreviewedFilesStore = { get: jest.fn().mockResolvedValue([]) };
     reviewInflightStore = { leave: jest.fn().mockResolvedValue(1) };
     reviewSettingsStore = { get: jest.fn().mockResolvedValue({}) };
+    lastReviewedShaStore = { set: jest.fn().mockResolvedValue(undefined) };
     reviewFailureNotice = {
       notify: jest.fn().mockResolvedValue(undefined),
       clear: jest.fn().mockResolvedValue(undefined),
@@ -127,6 +130,7 @@ describe('ReviewOrchestratorService', () => {
       unreviewedFilesStore as unknown as UnreviewedFilesStore,
       reviewInflightStore as unknown as ReviewInflightStore,
       reviewSettingsStore as unknown as ReviewSettingsStore,
+      lastReviewedShaStore as unknown as LastReviewedShaStore,
     );
   });
 
@@ -483,6 +487,107 @@ describe('ReviewOrchestratorService', () => {
       await service.handle({ ...completedPayload, reviews });
 
       expect(inlineTitles()).toHaveLength(4);
+    });
+  });
+
+  describe('증분 리뷰 (#94)', () => {
+    const BOT = 'dovi-code-assist[bot]';
+    const finding = (title: string, filePath: string) => ({
+      severity: 'major' as const,
+      confidence: 0.9,
+      filePath,
+      line: 5,
+      title,
+      message: `${title} 설명`,
+      evidence: [`code for ${title}`],
+    });
+    const posted = (id: number, path: string, title: string) => ({
+      id,
+      path,
+      user: { login: BOT },
+      in_reply_to_id: null,
+      body: `본문\n\n${fingerprintMarker(buildReviewComments([finding(title, path)])[0].fingerprint)}`,
+    });
+    const incrementalContext = {
+      ...context,
+      incrementalBase: 'abcdef1234567',
+      incrementalPaths: ['a.ts'],
+    };
+
+    beforeEach(() => {
+      process.env.GITHUB_BOT_LOGIN = 'dovi-code-assist';
+    });
+
+    it('게시에 성공하면 head 커밋을 마지막 리뷰 기준점으로 기록한다', async () => {
+      await service.handle(completedPayload);
+
+      expect(lastReviewedShaStore.set).toHaveBeenCalledWith(
+        completedPayload.repositoryId,
+        completedPayload.prNumber,
+        completedPayload.headSha,
+      );
+    });
+
+    it('게시에 실패하면 기준점을 기록하지 않는다 (그 커밋의 변경이 다음 증분에서 빠지면 안 된다)', async () => {
+      createReview.mockRejectedValue(
+        Object.assign(new Error('Unprocessable'), { status: 422 }),
+      );
+      jest.spyOn(Logger.prototype, 'error').mockImplementation();
+
+      await service.handle(completedPayload);
+
+      expect(lastReviewedShaStore.set).not.toHaveBeenCalled();
+    });
+
+    it('기준점 기록이 실패해도 리뷰 게시는 성공으로 끝난다', async () => {
+      lastReviewedShaStore.set.mockRejectedValue(new Error('redis down'));
+
+      await expect(service.handle(completedPayload)).resolves.not.toThrow();
+      expect(createReview).toHaveBeenCalled();
+    });
+
+    it('증분이면 이번에 보지 않은 파일의 기존 코멘트는 결과에 없어도 지우지 않는다', async () => {
+      reviewJobContextStore.get.mockResolvedValue(incrementalContext);
+      paginate.mockResolvedValue([
+        posted(1, 'a.ts', '이번에 본 파일의 해결된 지적'),
+        posted(2, 'b.ts', '다른 파일의 유효한 지적'),
+      ]);
+
+      await service.handle({ ...completedPayload, reviews: [] });
+
+      expect(deleteReviewComment).toHaveBeenCalledTimes(1);
+      expect(deleteReviewComment).toHaveBeenCalledWith(
+        expect.objectContaining({ comment_id: 1 }),
+      );
+    });
+
+    it('전체 리뷰는 기존대로 다시 나오지 않은 모든 파일의 코멘트를 정리한다', async () => {
+      paginate.mockResolvedValue([
+        posted(1, 'a.ts', '지적 1'),
+        posted(2, 'b.ts', '지적 2'),
+      ]);
+
+      await service.handle({ ...completedPayload, reviews: [] });
+
+      expect(deleteReviewComment).toHaveBeenCalledTimes(2);
+    });
+
+    it('증분 리뷰는 본문에 기준 커밋과 파일 수를 밝힌다', async () => {
+      reviewJobContextStore.get.mockResolvedValue(incrementalContext);
+
+      await service.handle(completedPayload);
+
+      const body = (createReview.mock.calls[0] as [{ body: string }])[0].body;
+      expect(body).toContain('증분 리뷰');
+      expect(body).toContain('abcdef1');
+      expect(body).toContain('1개 파일');
+    });
+
+    it('전체 리뷰 본문에는 증분 안내가 없다', async () => {
+      await service.handle(completedPayload);
+
+      const body = (createReview.mock.calls[0] as [{ body: string }])[0].body;
+      expect(body).not.toContain('증분 리뷰');
     });
   });
 

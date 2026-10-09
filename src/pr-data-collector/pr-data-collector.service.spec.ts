@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { PrDataCollectorService } from './pr-data-collector.service';
 import type { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
 import type { ReviewSettingsStore } from '../redis/review-settings.store';
+import type { LastReviewedShaStore } from '../redis/last-reviewed-sha.store';
 
 const LEAKED_TOKEN = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
 
@@ -34,6 +35,8 @@ describe('PrDataCollectorService', () => {
   };
   let unreviewedFilesStore: { set: jest.Mock };
   let reviewSettingsStore: { set: jest.Mock };
+  let lastReviewedShaStore: { get: jest.Mock };
+  let compare: jest.Mock;
   let service: PrDataCollectorService;
 
   beforeEach(() => {
@@ -44,12 +47,13 @@ describe('PrDataCollectorService', () => {
     paginate = jest.fn((): unknown => listFiles());
     pullsGet = jest.fn().mockResolvedValue({ data: 'diff --git a/x b/x' });
     getTree = jest.fn().mockRejectedValue(new Error('no tree'));
+    compare = jest.fn();
 
     octokit = {
       paginate,
       rest: {
         pulls: { get: pullsGet, listFiles },
-        repos: { getContent },
+        repos: { getContent, compareCommitsWithBasehead: compare },
         git: { getTree },
       },
     };
@@ -61,11 +65,13 @@ describe('PrDataCollectorService', () => {
 
     unreviewedFilesStore = { set: jest.fn().mockResolvedValue(undefined) };
     reviewSettingsStore = { set: jest.fn().mockResolvedValue(undefined) };
+    lastReviewedShaStore = { get: jest.fn().mockResolvedValue(null) };
 
     service = new PrDataCollectorService(
       installationTokenManager,
       unreviewedFilesStore as unknown as UnreviewedFilesStore,
       reviewSettingsStore as unknown as ReviewSettingsStore,
+      lastReviewedShaStore as unknown as LastReviewedShaStore,
     );
   });
 
@@ -738,6 +744,151 @@ describe('PrDataCollectorService', () => {
       const result = await service.collect(command);
 
       expect(paths(result)).toEqual(['src/a.ts']);
+    });
+  });
+
+  describe('증분 리뷰 (#94)', () => {
+    const file = (filename: string) => ({
+      filename,
+      status: 'modified',
+      patch: '@@ -1 +1 @@\n+x',
+      changes: 1,
+    });
+    const enableIncremental = (value = 'true') => {
+      const doc = `## Review Settings\nincrementalReview: ${value}`;
+      getContent.mockImplementation((params: { path: string }) =>
+        params.path === 'DOVI.md'
+          ? Promise.resolve({
+              data: {
+                type: 'file',
+                content: toBase64(doc),
+                size: Buffer.byteLength(doc, 'utf-8'),
+              },
+            })
+          : Promise.reject(
+              Object.assign(new Error('Not Found'), { status: 404 }),
+            ),
+      );
+    };
+    const comparison = (status: string, files: string[]) =>
+      compare.mockResolvedValue({
+        data: { status, files: files.map((filename) => ({ filename })) },
+      });
+    const paths = (result: Awaited<ReturnType<typeof service.collect>>) =>
+      result?.changedFiles.map((f) => f.filePath).sort();
+
+    beforeEach(() => {
+      mockChangedFiles([file('a.ts'), file('b.ts'), file('c.ts')]);
+      lastReviewedShaStore.get.mockResolvedValue('prev-sha');
+    });
+
+    it('설정이 꺼져 있으면(기본) 기준점이 있어도 전체 리뷰다', async () => {
+      const result = await service.collect(command);
+
+      expect(compare).not.toHaveBeenCalled();
+      expect(paths(result)).toEqual(['a.ts', 'b.ts', 'c.ts']);
+      expect(result?.incremental).toBeUndefined();
+    });
+
+    it('마지막 리뷰 커밋 이후 바뀐 파일만 보내고 증분임을 표시한다', async () => {
+      enableIncremental();
+      // base 브랜치 병합으로 딸려온 파일(x.ts)은 PR 파일 목록에 없으니 빠진다.
+      comparison('ahead', ['b.ts', 'x.ts']);
+
+      const result = await service.collect(command);
+
+      expect(compare).toHaveBeenCalledWith(
+        expect.objectContaining({ basehead: 'prev-sha...head-sha' }),
+      );
+      expect(paths(result)).toEqual(['b.ts']);
+      expect(result?.incremental).toBe(true);
+      expect(result?.previousHeadSha).toBe('prev-sha');
+    });
+
+    it('기준점이 없으면(첫 리뷰) 전체 리뷰다', async () => {
+      enableIncremental();
+      lastReviewedShaStore.get.mockResolvedValue(null);
+
+      const result = await service.collect(command);
+
+      expect(compare).not.toHaveBeenCalled();
+      expect(paths(result)).toEqual(['a.ts', 'b.ts', 'c.ts']);
+      expect(result?.incremental).toBeUndefined();
+    });
+
+    it('같은 커밋을 다시 리뷰하면(명시적 재실행) 전체 리뷰다', async () => {
+      enableIncremental();
+      lastReviewedShaStore.get.mockResolvedValue(command.headSha);
+
+      const result = await service.collect(command);
+
+      expect(compare).not.toHaveBeenCalled();
+      expect(paths(result)).toEqual(['a.ts', 'b.ts', 'c.ts']);
+    });
+
+    it.each(['diverged', 'behind', 'identical'])(
+      '비교 상태가 %s이면(강제 푸시 등) 전체 리뷰로 폴백한다',
+      async (status) => {
+        enableIncremental();
+        comparison(status, ['b.ts']);
+
+        const result = await service.collect(command);
+
+        expect(paths(result)).toEqual(['a.ts', 'b.ts', 'c.ts']);
+        expect(result?.incremental).toBeUndefined();
+      },
+    );
+
+    it('비교 API가 실패하면(이전 커밋이 사라짐 등) 전체 리뷰로 폴백한다', async () => {
+      enableIncremental();
+      compare.mockRejectedValue(
+        Object.assign(new Error('Not Found'), { status: 404 }),
+      );
+
+      const result = await service.collect(command);
+
+      expect(paths(result)).toEqual(['a.ts', 'b.ts', 'c.ts']);
+      expect(result?.incremental).toBeUndefined();
+    });
+
+    it('기준점 조회가 실패해도 전체 리뷰로 폴백한다', async () => {
+      enableIncremental();
+      lastReviewedShaStore.get.mockRejectedValue(new Error('redis down'));
+
+      const result = await service.collect(command);
+
+      expect(paths(result)).toEqual(['a.ts', 'b.ts', 'c.ts']);
+    });
+
+    it('비교 응답이 한 페이지를 채울 만큼 크면 누락 위험이 있어 전체 리뷰다', async () => {
+      enableIncremental();
+      comparison(
+        'ahead',
+        Array.from({ length: 100 }, (_, i) => `f${i}.ts`),
+      );
+
+      const result = await service.collect(command);
+
+      expect(paths(result)).toEqual(['a.ts', 'b.ts', 'c.ts']);
+      expect(result?.incremental).toBeUndefined();
+    });
+
+    it('바뀐 파일이 리뷰 대상(설정)에 하나도 없으면 빈 changedFiles의 증분 요청이다', async () => {
+      enableIncremental();
+      comparison('ahead', ['x.ts']);
+
+      const result = await service.collect(command);
+
+      expect(result?.changedFiles).toEqual([]);
+      expect(result?.incremental).toBe(true);
+    });
+
+    it('incrementalReview: false는 꺼짐으로 취급한다', async () => {
+      enableIncremental('false');
+
+      await service.collect(command);
+
+      expect(compare).not.toHaveBeenCalled();
     });
   });
 

@@ -20,6 +20,7 @@ import { AlertThrottleStore } from '../redis/alert-throttle.store';
 import { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
 import { ReviewInflightStore } from '../redis/review-inflight.store';
 import { ReviewSettingsStore } from '../redis/review-settings.store';
+import { LastReviewedShaStore } from '../redis/last-reviewed-sha.store';
 import { capInlineComments, meetsMinSeverity } from '../common/review-settings';
 import type { PublishSettings } from '../common/review-settings';
 import { formatReviewLatency } from '../common/review-latency';
@@ -29,6 +30,7 @@ import { extractFingerprint } from './finding-fingerprint';
 import { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import {
   appendUnanchoredFindings,
+  appendIncrementalNotice,
   appendUnreviewedFiles,
   inlineLimitSection,
   buildReviewComments,
@@ -70,6 +72,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     private readonly unreviewedFilesStore: UnreviewedFilesStore,
     private readonly reviewInflightStore: ReviewInflightStore,
     private readonly reviewSettingsStore: ReviewSettingsStore,
+    private readonly lastReviewedShaStore: LastReviewedShaStore,
   ) {}
 
   async handle(
@@ -191,6 +194,9 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         context,
         payload.prNumber,
         new Set(allComments.map((comment) => comment.fingerprint)),
+        context.incrementalPaths === undefined
+          ? undefined
+          : new Set(context.incrementalPaths),
       );
       const freshComments = allComments.filter(
         (comment) => !alreadyPosted.has(comment.fingerprint),
@@ -231,7 +237,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         repo: context.repo,
         sha: payload.headSha,
       };
-      const reviewBody = appendUnreviewedFiles(
+      const summaryBody = appendUnreviewedFiles(
         appendUnanchoredFindings(
           appendUnanchoredFindings(
             formatReviewSummary(payload.summary),
@@ -246,6 +252,14 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         ),
         await this.findUnreviewedFiles(payload),
       );
+      const reviewBody =
+        context.incrementalBase === undefined
+          ? summaryBody
+          : appendIncrementalNotice(
+              summaryBody,
+              context.incrementalBase,
+              context.incrementalPaths?.length ?? 0,
+            );
       const existingReviewId = await this.primaryReviewStore.get(
         payload.repositoryId,
         payload.prNumber,
@@ -272,6 +286,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
 
       // 이전 push에서 실패해 남긴 안내 코멘트는 리뷰가 성공했으니 더 이상 맞지 않는다.
       await this.reviewFailureNotice.clear(context);
+      await this.recordLastReviewedSha(payload);
       onOutcome('published');
     } catch (err) {
       // 4xx는 재시도해도 소용없는 영구 실패라 한 번만 알린다. 그 밖(5xx, 네트워크 오류)은
@@ -629,6 +644,8 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     context: ReviewJobContext,
     prNumber: number,
     foundAgainFingerprints: Set<string>,
+    // 증분 리뷰면 이번에 다시 본 파일 경로. 그 밖의 파일 코멘트는 이번 결과에 없어도 유효하므로 지우지 않는다.
+    reviewedPaths?: Set<string>,
   ): Promise<Set<string>> {
     const remaining = new Set<string>();
     const botLogin = process.env.GITHUB_BOT_LOGIN;
@@ -662,7 +679,10 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         const foundAgain =
           fingerprint !== null && foundAgainFingerprints.has(fingerprint);
 
-        if (hasReplies || foundAgain) {
+        const outOfScope =
+          reviewedPaths !== undefined && !reviewedPaths.has(comment.path);
+
+        if (hasReplies || foundAgain || outOfScope) {
           // 답글이 달린 스레드는 항상 보존하고, 다시 나온 지적도 그대로 둔다.
           if (fingerprint !== null) remaining.add(fingerprint);
         } else {
@@ -690,6 +710,25 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       return new Set();
     }
     return remaining;
+  }
+
+  // 증분 리뷰의 기준점. 게시에 성공한 뒤에만 남기고, 기록 실패는 리뷰 결과에 영향이 없다
+  // (다음 리뷰가 기준점 없이 전체 리뷰로 진행할 뿐이다).
+  private async recordLastReviewedSha(
+    payload: ReviewCompletedPayload,
+  ): Promise<void> {
+    try {
+      await this.lastReviewedShaStore.set(
+        payload.repositoryId,
+        payload.prNumber,
+        payload.headSha,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `마지막 리뷰 커밋 기록 실패: PR #${payload.prNumber}`,
+        err,
+      );
+    }
   }
 
   private async notifyFailure(

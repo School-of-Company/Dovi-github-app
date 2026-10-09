@@ -11,6 +11,8 @@ export interface ReviewSettings {
   include: string[];
   /** 리뷰 제외 glob. */
   exclude: string[];
+  /** 재리뷰 때 마지막으로 리뷰한 커밋 이후 바뀐 파일만 리뷰한다. 없으면 매번 전체 리뷰. */
+  incrementalReview?: boolean;
 }
 
 export interface ParsedReviewSettings {
@@ -53,6 +55,13 @@ function parseSeverity(value: string): Severity | undefined {
   // 이슈/문서에서 가장 낮은 단계를 nit이라고 부르므로 별칭으로 받는다.
   if (normalized === 'nit') return 'suggestion';
   return normalized in SEVERITY_RANK ? (normalized as Severity) : undefined;
+}
+
+function parseBoolean(value: string): boolean | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (['true', 'on', 'enabled', 'yes'].includes(normalized)) return true;
+  if (['false', 'off', 'disabled', 'no'].includes(normalized)) return false;
+  return undefined;
 }
 
 function parseGlobs(key: string, value: string, warnings: string[]): string[] {
@@ -130,6 +139,17 @@ export function parseReviewSettings(markdown: string): ParsedReviewSettings {
           );
         } else {
           settings.maxInlineComments = limit;
+        }
+        break;
+      }
+      case 'incrementalreview': {
+        const flag = parseBoolean(value);
+        if (flag === undefined) {
+          warnings.push(
+            `incrementalReview '${value}'은(는) true/false 중 하나여야 해서 무시했습니다`,
+          );
+        } else {
+          settings.incrementalReview = flag;
         }
         break;
       }

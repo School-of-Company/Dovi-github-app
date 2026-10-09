@@ -114,6 +114,30 @@ describe('parseReviewSettings', () => {
     expect(parsed.warnings.some((w) => w.includes('200자'))).toBe(true);
   });
 
+  it.each([
+    ['true', true],
+    ['ON', true],
+    ['yes', true],
+    ['false', false],
+    ['off', false],
+  ])('incrementalReview: %s', (value, expected) => {
+    const { settings, warnings } = parseReviewSettings(
+      doc(`incrementalReview: ${value}`),
+    );
+
+    expect(settings.incrementalReview).toBe(expected);
+    expect(warnings).toEqual([]);
+  });
+
+  it('incrementalReview가 불리언이 아니면 무시하고 경고한다 (꺼짐 = 전체 리뷰)', () => {
+    const { settings, warnings } = parseReviewSettings(
+      doc('incrementalReview: maybe'),
+    );
+
+    expect(settings.incrementalReview).toBeUndefined();
+    expect(warnings.join('\n')).toContain('incrementalReview');
+  });
+
   it('빈 값(include: )은 빈 목록이다', () => {
     expect(parseReviewSettings(doc('include:')).settings.include).toEqual([]);
   });
