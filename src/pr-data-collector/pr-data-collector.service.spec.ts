@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { PrDataCollectorService } from './pr-data-collector.service';
 import type { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
+import type { ReviewSettingsStore } from '../redis/review-settings.store';
 
 const LEAKED_TOKEN = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
 
@@ -32,6 +33,7 @@ describe('PrDataCollectorService', () => {
     getScopedToken: jest.Mock;
   };
   let unreviewedFilesStore: { set: jest.Mock };
+  let reviewSettingsStore: { set: jest.Mock };
   let service: PrDataCollectorService;
 
   beforeEach(() => {
@@ -58,10 +60,12 @@ describe('PrDataCollectorService', () => {
     };
 
     unreviewedFilesStore = { set: jest.fn().mockResolvedValue(undefined) };
+    reviewSettingsStore = { set: jest.fn().mockResolvedValue(undefined) };
 
     service = new PrDataCollectorService(
       installationTokenManager,
       unreviewedFilesStore as unknown as UnreviewedFilesStore,
+      reviewSettingsStore as unknown as ReviewSettingsStore,
     );
   });
 
@@ -545,6 +549,195 @@ describe('PrDataCollectorService', () => {
 
       expect(doc?.content).not.toContain('hunter2hunter2');
       expect(doc?.content).toContain('# 규칙');
+    });
+  });
+
+  describe('레포별 리뷰 설정 (#85)', () => {
+    const file = (filename: string) => ({
+      filename,
+      status: 'modified',
+      patch: '@@ -1 +1 @@\n+x',
+      changes: 1,
+    });
+
+    // DOVI.md를 지정한 ref에서만 존재하는 것처럼 응답하고, 요청된 (path, ref)를 기록한다.
+    function mockDoviMd(content: string, onlyAtRef?: string) {
+      const requested: Array<{ path: string; ref: string }> = [];
+      getContent.mockImplementation((params: { path: string; ref: string }) => {
+        requested.push({ path: params.path, ref: params.ref });
+        if (
+          params.path === 'DOVI.md' &&
+          (onlyAtRef === undefined || params.ref === onlyAtRef)
+        ) {
+          return Promise.resolve({
+            data: {
+              type: 'file',
+              content: toBase64(content),
+              size: Buffer.byteLength(content, 'utf-8'),
+            },
+          });
+        }
+        return Promise.reject(
+          Object.assign(new Error('Not Found'), { status: 404 }),
+        );
+      });
+      return requested;
+    }
+    const settingsDoc = (...lines: string[]) =>
+      ['## Review Settings', ...lines].join('\n');
+    const paths = (result: Awaited<ReturnType<typeof service.collect>>) =>
+      result?.changedFiles.map((f) => f.filePath).sort();
+
+    it('exclude에 매치하는 파일은 changedFiles에서 뺀다 (미검토로도 안내하지 않는다)', async () => {
+      mockChangedFiles([
+        file('src/a.ts'),
+        file('src/user.generated.ts'),
+        file('docs/guide.md'),
+      ]);
+      mockDoviMd(settingsDoc('exclude: **/*.generated.ts, docs/**'));
+
+      const result = await service.collect(command);
+
+      expect(paths(result)).toEqual(['src/a.ts']);
+      expect(unreviewedFilesStore.set).toHaveBeenCalledWith(
+        command.repositoryId,
+        command.prNumber,
+        command.headSha,
+        [],
+      );
+    });
+
+    it('include가 있으면 그에 매치하는 파일만 보낸다', async () => {
+      mockChangedFiles([
+        file('src/a.ts'),
+        file('lib/b.ts'),
+        file('scripts/c.sh'),
+      ]);
+      mockDoviMd(settingsDoc('include: src/**, lib/**'));
+
+      const result = await service.collect(command);
+
+      expect(paths(result)).toEqual(['lib/b.ts', 'src/a.ts']);
+    });
+
+    it('설정이 없는 레포는 동작이 바뀌지 않는다 (모든 파일을 보낸다)', async () => {
+      mockChangedFiles([file('src/a.ts'), file('docs/guide.md')]);
+      mockDoviMd('# DOVI\n설명만 있음');
+
+      const result = await service.collect(command);
+
+      expect(paths(result)).toEqual(['docs/guide.md', 'src/a.ts']);
+    });
+
+    it('DOVI.md가 없어도(404) 조용히 기본값으로 진행한다', async () => {
+      mockChangedFiles([file('src/a.ts')]);
+      mockDoviMd('', 'never-matches');
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+      const result = await service.collect(command);
+
+      expect(paths(result)).toEqual(['src/a.ts']);
+      const logged = (warn.mock.calls as unknown[][])
+        .map((c) => String(c[0]))
+        .join('\n');
+      expect(logged).not.toContain('DOVI.md');
+      warn.mockRestore();
+    });
+
+    it('PR head가 아니라 base 커밋의 DOVI.md에서 설정을 읽는다', async () => {
+      mockChangedFiles([file('src/a.ts')]);
+      const requested = mockDoviMd(settingsDoc('exclude: src/**'));
+
+      await service.collect(command);
+
+      const settingsRead = requested.filter((r) => r.path === 'DOVI.md');
+      expect(settingsRead.some((r) => r.ref === command.baseSha)).toBe(true);
+    });
+
+    it('PR이 DOVI.md에서 exclude를 늘려 자기 변경을 빼려 해도 head 버전은 쓰지 않는다', async () => {
+      mockChangedFiles([file('src/a.ts')]);
+      // head에만 있는 DOVI.md(= 이 PR이 추가/수정한 설정)
+      mockDoviMd(settingsDoc('exclude: src/**'), command.headSha);
+
+      const result = await service.collect(command);
+
+      expect(paths(result)).toEqual(['src/a.ts']);
+    });
+
+    it('게시 단계가 쓸 minSeverity/maxInlineComments를 (저장소, PR, headSha)로 저장한다', async () => {
+      mockChangedFiles([file('src/a.ts')]);
+      mockDoviMd(settingsDoc('minSeverity: major', 'maxInlineComments: 5'));
+
+      await service.collect(command);
+
+      expect(reviewSettingsStore.set).toHaveBeenCalledWith(
+        command.repositoryId,
+        command.prNumber,
+        command.headSha,
+        { minSeverity: 'major', maxInlineComments: 5 },
+      );
+    });
+
+    it('설정이 없으면 빈 설정을 저장해 이전 수집의 설정을 지운다', async () => {
+      mockChangedFiles([file('src/a.ts')]);
+      mockDoviMd('# DOVI');
+
+      await service.collect(command);
+
+      expect(reviewSettingsStore.set).toHaveBeenCalledWith(
+        command.repositoryId,
+        command.prNumber,
+        command.headSha,
+        { minSeverity: undefined, maxInlineComments: undefined },
+      );
+    });
+
+    it('잘못된 값은 무시하고 경고만 남기며 나머지 설정은 적용한다', async () => {
+      mockChangedFiles([file('src/a.ts'), file('docs/guide.md')]);
+      mockDoviMd(
+        settingsDoc(
+          'minSeverity: urgent',
+          'maxInlineComments: 0',
+          'exclude: docs/**',
+        ),
+      );
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+      const result = await service.collect(command);
+
+      expect(paths(result)).toEqual(['src/a.ts']);
+      expect(reviewSettingsStore.set).toHaveBeenCalledWith(
+        command.repositoryId,
+        command.prNumber,
+        command.headSha,
+        { minSeverity: undefined, maxInlineComments: undefined },
+      );
+      const logged = (warn.mock.calls as unknown[][])
+        .map((c) => String(c[0]))
+        .join('\n');
+      expect(logged).toContain('Review Settings 경고');
+      warn.mockRestore();
+    });
+
+    it('DOVI.md 읽기가 실패해도(5xx 등) 리뷰는 설정 없이 진행한다', async () => {
+      mockChangedFiles([file('src/a.ts')]);
+      getContent.mockRejectedValue(
+        Object.assign(new Error('boom'), { status: 502 }),
+      );
+
+      const result = await service.collect(command);
+
+      expect(paths(result)).toEqual(['src/a.ts']);
+    });
+
+    it('설정 저장이 실패해도 수집 결과는 그대로 돌려준다', async () => {
+      mockChangedFiles([file('src/a.ts')]);
+      mockDoviMd(settingsDoc('minSeverity: major'));
+      reviewSettingsStore.set.mockRejectedValue(new Error('redis down'));
+
+      const result = await service.collect(command);
+
+      expect(paths(result)).toEqual(['src/a.ts']);
     });
   });
 

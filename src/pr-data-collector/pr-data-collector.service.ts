@@ -6,6 +6,13 @@ import { withRetry } from '../common/retry';
 import { maskChangedFiles, maskSecrets } from '../common/secret-mask';
 import { isSecretPath } from '../common/secret-path';
 import { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
+import { ReviewSettingsStore } from '../redis/review-settings.store';
+import {
+  DEFAULT_REVIEW_SETTINGS,
+  isReviewTarget,
+  parseReviewSettings,
+} from '../common/review-settings';
+import type { ReviewSettings } from '../common/review-settings';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
 import { sortByReviewPriority } from './changed-file-priority';
@@ -68,6 +75,7 @@ export class PrDataCollectorService {
     @Inject(INSTALLATION_TOKEN_MANAGER)
     private readonly installationTokenManager: InstallationTokenManager,
     private readonly unreviewedFilesStore: UnreviewedFilesStore,
+    private readonly reviewSettingsStore: ReviewSettingsStore,
   ) {}
 
   async collect(
@@ -88,10 +96,27 @@ export class PrDataCollectorService {
     const octokit =
       await this.installationTokenManager.getOctokit(installationId);
 
+    // include/exclude는 어떤 파일을 가져올지 정하므로 다른 수집보다 먼저 읽는다.
+    const settings = await this.loadReviewSettings(
+      octokit,
+      owner,
+      repo,
+      baseSha,
+      prNumber,
+    );
+    await this.saveReviewSettings(repositoryId, prNumber, headSha, settings);
+
     const [diffResult, changedFilesResult, contextFilesResult, ruleDocs] =
       await Promise.allSettled([
         this.fetchDiff(octokit, owner, repo, prNumber),
-        this.fetchChangedFiles(octokit, owner, repo, prNumber, headSha),
+        this.fetchChangedFiles(
+          octokit,
+          owner,
+          repo,
+          prNumber,
+          headSha,
+          settings,
+        ),
         this.fetchContextFiles(octokit, owner, repo, headSha),
         this.fetchRuleDocs(octokit, owner, repo, baseSha),
       ]);
@@ -196,8 +221,9 @@ export class PrDataCollectorService {
     repo: string,
     prNumber: number,
     headSha: string,
+    settings: ReviewSettings,
   ): Promise<{ changedFiles: ChangedFile[]; unreviewed: UnreviewedFile[] }> {
-    const files = await withRetry(() =>
+    const allFiles = await withRetry(() =>
       octokit.paginate(octokit.rest.pulls.listFiles, {
         owner,
         repo,
@@ -205,6 +231,17 @@ export class PrDataCollectorService {
         per_page: 100,
       }),
     );
+
+    // 레포 설정(include/exclude)으로 제외한 파일은 사용자가 의도한 것이라 미검토로 안내하지 않는다.
+    // AI 호출·토큰을 아끼려고 content/patch를 가져오기 전에 거른다.
+    const files = allFiles.filter((file) =>
+      isReviewTarget(file.filename, settings),
+    );
+    if (files.length < allFiles.length) {
+      this.logger.log(
+        `PR #${prNumber} 레포 설정(include/exclude)으로 ${allFiles.length - files.length}개 파일 제외`,
+      );
+    }
 
     // GitHub는 너무 큰 파일에는 patch를 주지 않는다. 바이너리·순수 이름 변경도 patch가 없지만
     // 그때는 변경 줄 수(changes)가 0이라 "리뷰할 내용이 없는 것"이므로 미검토로 보지 않는다.
@@ -318,6 +355,66 @@ export class PrDataCollectorService {
     );
 
     return { changedFiles: sortByReviewPriority(changedFiles), unreviewed };
+  }
+
+  // 레포 설정은 PR이 바꿀 수 없는 **base 커밋**의 DOVI.md에서 읽는다. head에서 읽으면 PR 작성자가
+  // 같은 PR에서 exclude를 늘려 자기 변경을 리뷰 대상에서 빼거나 minSeverity로 지적을 숨길 수 있다
+  // (규칙 문서·프로브 opt-in과 같은 원칙). 읽기·파싱에 실패해도 리뷰는 막지 않고 기본값(설정 없음)으로 진행한다.
+  private async loadReviewSettings(
+    octokit: Octokit,
+    owner: string,
+    repo: string,
+    baseSha: string,
+    prNumber: number,
+  ): Promise<ReviewSettings> {
+    const result = await fetchFileContent(
+      octokit,
+      owner,
+      repo,
+      baseSha,
+      'DOVI.md',
+      CONTEXT_FILE_SIZE_LIMIT,
+    );
+    if (result.content === null) {
+      // DOVI.md가 없는 레포가 대부분이라 404는 조용히 넘긴다.
+      if (result.skipReason && result.skipReason !== 'not-found') {
+        this.logger.warn(
+          `PR #${prNumber} DOVI.md를 읽지 못해 레포 설정 없이 진행: ${describeSkipReason(
+            result.skipReason,
+            CONTEXT_FILE_SIZE_LIMIT,
+            result.size,
+          )}`,
+        );
+      }
+      return DEFAULT_REVIEW_SETTINGS;
+    }
+
+    const { settings, warnings } = parseReviewSettings(result.content);
+    if (warnings.length > 0) {
+      this.logger.warn(
+        `PR #${prNumber} DOVI.md Review Settings 경고: ${warnings.join(' / ')}`,
+      );
+    }
+    return settings;
+  }
+
+  private async saveReviewSettings(
+    repositoryId: number,
+    prNumber: number,
+    headSha: string,
+    settings: ReviewSettings,
+  ): Promise<void> {
+    try {
+      await this.reviewSettingsStore.set(repositoryId, prNumber, headSha, {
+        minSeverity: settings.minSeverity,
+        maxInlineComments: settings.maxInlineComments,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `레포 설정 저장 실패, minSeverity/maxInlineComments 없이 게시: PR #${prNumber}`,
+        err,
+      );
+    }
   }
 
   private async saveUnreviewed(
