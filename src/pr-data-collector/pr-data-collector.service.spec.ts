@@ -79,7 +79,7 @@ describe('PrDataCollectorService', () => {
     });
   }
 
-  it('AST 지원 확장자의 added/modified 파일은 headSha 기준 content를 채워 보낸다', async () => {
+  it('텍스트 소스(.ts 등) added/modified 파일은 headSha 기준 content를 채워 보낸다', async () => {
     mockChangedFiles([
       { filename: 'src/foo.ts', status: 'modified', patch: '@@ -1 +1 @@' },
     ]);
@@ -123,7 +123,7 @@ describe('PrDataCollectorService', () => {
     );
   });
 
-  it('tree-sitter 미지원 확장자는 content를 채우지 않는다', async () => {
+  it('텍스트 소스가 아닌 파일(.md 등)은 content를 채우지 않는다', async () => {
     mockChangedFiles([
       { filename: 'README.md', status: 'modified', patch: '@@ -1 +1 @@' },
     ]);
@@ -134,7 +134,77 @@ describe('PrDataCollectorService', () => {
     expect(result?.changedFiles[0].content).toBeUndefined();
   });
 
-  it('.java 파일은 AST 지원 확장자로 취급해 content를 채운다', async () => {
+  it('Kotlin(.kt) 변경 파일도 content를 채워 보낸다 (ai-server가 함수·클래스 경계 컨텍스트로 사용)', async () => {
+    mockChangedFiles([
+      {
+        filename: 'src/main/kotlin/com/example/UserService.kt',
+        status: 'modified',
+        patch: '@@ -1 +1 @@\n+fun x() {}',
+      },
+    ]);
+    mockFileContent(
+      'src/main/kotlin/com/example/UserService.kt',
+      'class UserService { fun x() {} }',
+    );
+
+    const result = await service.collect(command);
+
+    expect(result?.changedFiles[0].content).toBe(
+      'class UserService { fun x() {} }',
+    );
+  });
+
+  it('AST 미지원 텍스트 소스(.go)도 content를 채워 보낸다 (ai-server가 줄 윈도우로 사용)', async () => {
+    mockChangedFiles([
+      {
+        filename: 'cmd/server/main.go',
+        status: 'modified',
+        patch: '@@ -1 +1 @@\n+package main',
+      },
+    ]);
+    mockFileContent('cmd/server/main.go', 'package main\nfunc main() {}');
+
+    const result = await service.collect(command);
+
+    expect(result?.changedFiles[0].content).toBe(
+      'package main\nfunc main() {}',
+    );
+  });
+
+  it('생성·minified 파일과 의존성 디렉터리 안의 파일은 content를 조회하지 않는다', async () => {
+    mockChangedFiles([
+      {
+        filename: 'static/app.min.js',
+        status: 'modified',
+        patch: '@@ -1 +1 @@\n+x',
+      },
+      {
+        filename: 'dist/main.js',
+        status: 'modified',
+        patch: '@@ -1 +1 @@\n+x',
+      },
+      {
+        filename: 'gen/service.pb.go',
+        status: 'modified',
+        patch: '@@ -1 +1 @@\n+x',
+      },
+    ]);
+    getContent.mockClear();
+
+    const result = await service.collect(command);
+
+    expect(result?.changedFiles.every((f) => f.content === undefined)).toBe(
+      true,
+    );
+    const requestedPaths = (getContent.mock.calls as [{ path: string }][]).map(
+      ([params]) => params.path,
+    );
+    expect(requestedPaths).not.toContain('static/app.min.js');
+    expect(requestedPaths).not.toContain('dist/main.js');
+    expect(requestedPaths).not.toContain('gen/service.pb.go');
+  });
+
+  it('.java 파일은 content를 채운다', async () => {
     mockChangedFiles([
       {
         filename: 'src/main/java/com/example/Foo.java',
@@ -214,7 +284,7 @@ describe('PrDataCollectorService', () => {
   });
 
   it('patch 총합이 768KB 상한을 넘으면 큰 patch부터 비우되 파일 항목은 남긴다', async () => {
-    // .md는 AST 미지원이라 content를 조회하지 않는다 → patch만으로 상한을 넘기는 상황.
+    // .md는 텍스트 소스가 아니라 content를 조회하지 않는다 → patch만으로 상한을 넘기는 상황.
     const patchSizes: Record<string, number> = {
       'docs/a.md': 300 * 1024,
       'docs/b.md': 250 * 1024,
