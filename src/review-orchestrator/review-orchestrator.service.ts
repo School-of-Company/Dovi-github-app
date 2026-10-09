@@ -17,15 +17,18 @@ import type { ReviewJobContext } from '../redis/review-job-context.type';
 import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import { PrimaryReviewStore } from '../redis/primary-review.store';
 import { AlertThrottleStore } from '../redis/alert-throttle.store';
+import { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
 import { ReviewFailureNoticeService } from './review-failure-notice.service';
 import { extractFingerprint } from './finding-fingerprint';
 import { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
 import {
   appendUnanchoredFindings,
+  appendUnreviewedFiles,
   buildReviewComments,
   formatReviewSummary,
 } from './review-comment.formatter';
 import type { FormattedReviewComment } from './review-comment.formatter';
+import type { UnreviewedFile } from '../pr-data-collector/dto/unreviewed-file';
 import type { ReviewOrchestrator } from './review-orchestrator.interface';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
@@ -57,6 +60,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     private readonly reviewFailureNotice: ReviewFailureNoticeService,
     private readonly reviewFreshness: ReviewFreshnessService,
     private readonly alertThrottle: AlertThrottleStore,
+    private readonly unreviewedFilesStore: UnreviewedFilesStore,
   ) {}
 
   async handle(
@@ -125,10 +129,13 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
           payload,
           freshComments,
         );
-      const reviewBody = appendUnanchoredFindings(
-        formatReviewSummary(payload.summary),
-        demoted,
-        { owner: context.owner, repo: context.repo, sha: payload.headSha },
+      const reviewBody = appendUnreviewedFiles(
+        appendUnanchoredFindings(
+          formatReviewSummary(payload.summary),
+          demoted,
+          { owner: context.owner, repo: context.repo, sha: payload.headSha },
+        ),
+        await this.findUnreviewedFiles(payload),
       );
       const existingReviewId = await this.primaryReviewStore.get(
         payload.repositoryId,
@@ -585,6 +592,25 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
         `(${REASON_DESCRIPTIONS[payload.reason] ?? '알 수 없는 사유'})`,
       color: 'danger',
     });
+  }
+
+  // 미검토 파일 안내는 보조 정보라 조회가 실패해도 리뷰 게시는 막지 않는다(안내만 빠진다).
+  private async findUnreviewedFiles(
+    payload: ReviewCompletedPayload,
+  ): Promise<UnreviewedFile[]> {
+    try {
+      return await this.unreviewedFilesStore.get(
+        payload.repositoryId,
+        payload.prNumber,
+        payload.headSha,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `미검토 파일 목록 조회 실패, 안내 없이 게시: PR #${payload.prNumber}`,
+        err,
+      );
+      return [];
+    }
   }
 
   // 알림 제한은 보조 기능이라 Redis 오류로 알림 자체를 막지 않는다(실패하면 알린다).

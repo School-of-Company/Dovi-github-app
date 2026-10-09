@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { PrDataCollectorService } from './pr-data-collector.service';
+import type { UnreviewedFilesStore } from '../redis/unreviewed-files.store';
 
 const LEAKED_TOKEN = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
 
@@ -30,6 +31,7 @@ describe('PrDataCollectorService', () => {
     getOctokit: jest.Mock;
     getScopedToken: jest.Mock;
   };
+  let unreviewedFilesStore: { set: jest.Mock };
   let service: PrDataCollectorService;
 
   beforeEach(() => {
@@ -55,11 +57,21 @@ describe('PrDataCollectorService', () => {
       getScopedToken: jest.fn(),
     };
 
-    service = new PrDataCollectorService(installationTokenManager);
+    unreviewedFilesStore = { set: jest.fn().mockResolvedValue(undefined) };
+
+    service = new PrDataCollectorService(
+      installationTokenManager,
+      unreviewedFilesStore as unknown as UnreviewedFilesStore,
+    );
   });
 
   function mockChangedFiles(
-    files: Array<{ filename: string; status: string; patch?: string }>,
+    files: Array<{
+      filename: string;
+      status: string;
+      patch?: string;
+      changes?: number;
+    }>,
   ): void {
     listFiles.mockResolvedValue(files);
   }
@@ -533,6 +545,116 @@ describe('PrDataCollectorService', () => {
 
       expect(doc?.content).not.toContain('hunter2hunter2');
       expect(doc?.content).toContain('# 규칙');
+    });
+  });
+
+  describe('리뷰하지 못한 파일 수집 (#86)', () => {
+    const savedList = () =>
+      (unreviewedFilesStore.set.mock.calls[0] as unknown[])[3] as {
+        filePath: string;
+        reason: string;
+      }[];
+
+    it('GitHub가 patch를 주지 않은(매우 큰) 파일은 no-patch로 기록한다', async () => {
+      mockChangedFiles([
+        { filename: 'src/huge.ts', status: 'modified', changes: 5000 },
+        {
+          filename: 'src/ok.ts',
+          status: 'modified',
+          patch: '@@ -1 +1 @@',
+          changes: 1,
+        },
+      ]);
+
+      await service.collect(command);
+
+      expect(unreviewedFilesStore.set).toHaveBeenCalledWith(
+        command.repositoryId,
+        command.prNumber,
+        command.headSha,
+        [{ filePath: 'src/huge.ts', reason: 'no-patch' }],
+      );
+    });
+
+    it('순수 이름 변경·바이너리처럼 변경 줄이 0이면 미검토로 보지 않는다', async () => {
+      mockChangedFiles([
+        { filename: 'src/renamed.ts', status: 'renamed', changes: 0 },
+        { filename: 'assets/logo.png', status: 'added', changes: 0 },
+      ]);
+
+      await service.collect(command);
+
+      expect(unreviewedFilesStore.set).toHaveBeenCalledWith(
+        command.repositoryId,
+        command.prNumber,
+        command.headSha,
+        [],
+      );
+    });
+
+    it('삭제된 파일은 patch가 없어도 미검토로 보지 않는다', async () => {
+      mockChangedFiles([
+        { filename: 'src/old.ts', status: 'removed', changes: 40 },
+      ]);
+
+      await service.collect(command);
+
+      expect(savedList()).toEqual([]);
+    });
+
+    it('총합 상한 때문에 patch까지 제외된 파일은 patch-budget으로 기록한다', async () => {
+      const sizes: Record<string, number> = {
+        'docs/a.md': 300 * 1024,
+        'docs/b.md': 250 * 1024,
+        'docs/c.md': 200 * 1024,
+        'docs/d.md': 150 * 1024,
+        'docs/e.md': 100 * 1024,
+      };
+      mockChangedFiles(
+        Object.entries(sizes).map(([filename, size]) => ({
+          filename,
+          status: 'modified',
+          patch: 'p'.repeat(size),
+          changes: 10,
+        })),
+      );
+
+      await service.collect(command);
+
+      expect(savedList()).toEqual([
+        { filePath: 'docs/a.md', reason: 'patch-budget' },
+      ]);
+    });
+
+    it('제외가 없으면 빈 목록을 저장해 이전 수집의 목록을 지운다', async () => {
+      mockChangedFiles([
+        {
+          filename: 'src/a.ts',
+          status: 'modified',
+          patch: '@@ -1 +1 @@',
+          changes: 1,
+        },
+      ]);
+
+      await service.collect(command);
+
+      expect(unreviewedFilesStore.set).toHaveBeenCalledWith(
+        command.repositoryId,
+        command.prNumber,
+        command.headSha,
+        [],
+      );
+    });
+
+    it('목록 저장이 실패해도 수집 결과는 그대로 돌려준다 (안내는 보조 기능)', async () => {
+      mockChangedFiles([
+        { filename: 'src/huge.ts', status: 'modified', changes: 5000 },
+      ]);
+      unreviewedFilesStore.set.mockRejectedValue(new Error('redis down'));
+
+      const result = await service.collect(command);
+
+      expect(result?.changedFiles).toHaveLength(1);
     });
   });
 

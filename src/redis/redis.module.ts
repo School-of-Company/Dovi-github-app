@@ -10,6 +10,7 @@ import { SandboxProbeJobContextStore } from './sandbox-probe-job-context.store';
 import { SandboxProbeStickyCommentStore } from './sandbox-probe-sticky-comment.store';
 import { ReviewFailureCommentStore } from './review-failure-comment.store';
 import { AlertThrottleStore } from './alert-throttle.store';
+import { UnreviewedFilesStore } from './unreviewed-files.store';
 import { ReviewCommandCooldownStore } from './review-command-cooldown.store';
 import { REDIS_CLIENT } from './redis.constants';
 
@@ -41,6 +42,7 @@ import { REDIS_CLIENT } from './redis.constants';
     ReviewFailureCommentStore,
     ReviewCommandCooldownStore,
     AlertThrottleStore,
+    UnreviewedFilesStore,
   ],
   exports: [
     REDIS_CLIENT,
@@ -55,6 +57,7 @@ import { REDIS_CLIENT } from './redis.constants';
     ReviewFailureCommentStore,
     ReviewCommandCooldownStore,
     AlertThrottleStore,
+    UnreviewedFilesStore,
   ],
 })
 export class RedisModule {}
