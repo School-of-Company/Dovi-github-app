@@ -7,6 +7,7 @@ import {
   isGoneError,
   isUnprocessableError,
 } from '../common/http-error';
+import { describeError } from '../common/describe-error';
 import { parseCommentableLines } from '../common/diff-lines';
 import { withRetry } from '../common/retry';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
@@ -15,6 +16,7 @@ import { ReviewJobContextStore } from '../redis/review-job-context.store';
 import type { ReviewJobContext } from '../redis/review-job-context.type';
 import { ReviewCommentFindingStore } from '../redis/review-comment-finding.store';
 import { PrimaryReviewStore } from '../redis/primary-review.store';
+import { AlertThrottleStore } from '../redis/alert-throttle.store';
 import { ReviewFailureNoticeService } from './review-failure-notice.service';
 import { extractFingerprint } from './finding-fingerprint';
 import { ReviewFreshnessService } from '../review-freshness/review-freshness.service';
@@ -27,6 +29,9 @@ import type { FormattedReviewComment } from './review-comment.formatter';
 import type { ReviewOrchestrator } from './review-orchestrator.interface';
 import type { ReviewCompletedPayload } from './dto/review-completed.payload';
 import type { ReviewFailedPayload } from './dto/review-failed.payload';
+
+// 재시도되는 오류(5xx, 네트워크)의 같은 job 알림 간격.
+const RETRYABLE_ALERT_INTERVAL_SECONDS = 10 * 60;
 
 // ai-server의 FailureReason과 1:1 대응하는 사람이 읽을 설명. Discord 알림에서
 // reason 코드만 봐서는 뭐가 문제인지 바로 안 와닿아서 함께 보여준다.
@@ -51,6 +56,7 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     private readonly dicoshot: DicoshotService,
     private readonly reviewFailureNotice: ReviewFailureNoticeService,
     private readonly reviewFreshness: ReviewFreshnessService,
+    private readonly alertThrottle: AlertThrottleStore,
   ) {}
 
   async handle(
@@ -151,15 +157,25 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
       // 이전 push에서 실패해 남긴 안내 코멘트는 리뷰가 성공했으니 더 이상 맞지 않는다.
       await this.reviewFailureNotice.clear(context);
     } catch (err) {
-      await this.notifyOrchestratorError(payload, context, err);
-
+      // 4xx는 재시도해도 소용없는 영구 실패라 한 번만 알린다. 그 밖(5xx, 네트워크 오류)은
+      // 던진 오류가 Kafka 재전달로 같은 메시지를 계속 다시 처리하게 만드는데, 그때마다
+      // 알리면 같은 job의 알림이 수십 개 쌓인다 — 같은 job은 일정 시간에 한 번만 알린다.
       if (isClientError(err)) {
+        await this.notifyOrchestratorError(payload, context, err, false);
         this.logger.error(
           `영구적으로 실패한 리뷰 등록(status=${err.status}), 재시도하지 않고 종료: ${payload.reviewJobId}`,
           err,
         );
         return;
       }
+
+      if (await this.shouldAlertRetryable(payload.reviewJobId)) {
+        await this.notifyOrchestratorError(payload, context, err, true);
+      }
+      // 서버 로그에는 매 시도를 남긴다(알림만 줄이고 진단 정보는 줄이지 않는다).
+      this.logger.warn(
+        `리뷰 등록 실패, 재전달로 재시도됩니다: ${payload.reviewJobId} — ${describeError(err)}`,
+      );
 
       throw err;
     }
@@ -571,14 +587,31 @@ export class ReviewOrchestratorService implements ReviewOrchestrator {
     });
   }
 
+  // 알림 제한은 보조 기능이라 Redis 오류로 알림 자체를 막지 않는다(실패하면 알린다).
+  private async shouldAlertRetryable(reviewJobId: string): Promise<boolean> {
+    try {
+      return await this.alertThrottle.acquire(
+        `orchestrator-error:${reviewJobId}`,
+        RETRYABLE_ALERT_INTERVAL_SECONDS,
+      );
+    } catch {
+      return true;
+    }
+  }
+
   private async notifyOrchestratorError(
     payload: ReviewCompletedPayload,
     context: ReviewJobContext,
     err: unknown,
+    retrying: boolean,
   ): Promise<void> {
     await this.safeNotify({
       title: 'GitHub 리뷰 등록 실패',
-      description: `${context.owner}/${context.repo}#${payload.prNumber} (reviewJobId=${payload.reviewJobId}): ${err instanceof Error ? err.message : String(err)}`,
+      description:
+        `${context.owner}/${context.repo}#${payload.prNumber} (reviewJobId=${payload.reviewJobId}): ${describeError(err)}` +
+        (retrying
+          ? `\n재시도 중입니다. 같은 job의 반복 알림은 ${RETRYABLE_ALERT_INTERVAL_SECONDS / 60}분간 생략합니다.`
+          : ''),
       color: 'danger',
     });
   }

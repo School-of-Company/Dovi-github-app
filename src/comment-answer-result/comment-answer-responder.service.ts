@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DicoshotService } from 'dicoshot-nest';
 import type { CustomMessageOptions } from 'dicoshot-nest';
+import { describeError } from '../common/describe-error';
 import { isClientError } from '../common/http-error';
 import { INSTALLATION_TOKEN_MANAGER } from '../installation-token/installation-token-manager.interface';
 import type { InstallationTokenManager } from '../installation-token/installation-token-manager.interface';
@@ -84,7 +85,7 @@ export class CommentAnswerResponderService implements CommentAnswerResponder {
   ): Promise<void> {
     await this.safeNotify({
       title: 'GitHub 코멘트 답글 등록 실패',
-      description: `${context.owner}/${context.repo}#${context.prNumber} (commentJobId=${payload.commentJobId}): ${err instanceof Error ? err.message : String(err)}`,
+      description: `${context.owner}/${context.repo}#${context.prNumber} (commentJobId=${payload.commentJobId}): ${describeError(err)}`,
       color: 'danger',
     });
   }

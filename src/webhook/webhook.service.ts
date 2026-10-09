@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DicoshotService } from 'dicoshot-nest';
 import type { CustomMessageOptions } from 'dicoshot-nest';
+import { describeError } from '../common/describe-error';
 import { PrDataCollectorService } from '../pr-data-collector/pr-data-collector.service';
 import { ReviewDispatcherService } from '../review-dispatcher/review-dispatcher.service';
 import { CommentAnswerCollectorService } from '../comment-answer/comment-answer-collector.service';
@@ -575,7 +576,7 @@ export class WebhookService {
       title: '리뷰 트리거 실패',
       description:
         `${owner}/${repo}#${prNumber} (${stage}): ` +
-        `${err instanceof Error ? err.message : String(err)}\n` +
+        `${describeError(err)}\n` +
         `PR에 @dovi-code-assist 멘션하면 재시도됩니다.`,
       color: 'danger',
     });
